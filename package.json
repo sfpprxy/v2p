@@ -1,0 +1,26 @@
+{
+  "name": "v2p-ts",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.3.12"
+  },
+  "scripts": {
+    "build": "bunx tsc -p tsconfig.json",
+    "check": "bunx tsc --noEmit -p tsconfig.json",
+    "copy-offtopic-to-subdirs": "bun run scripts/copy-offtopic-to-subdirs.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.50.1",
+    "@renmu/bili-api": "^2.13.1",
+    "ai": "^6.0.168",
+    "ai-sdk-provider-codex-app-server": "^1.1.7",
+    "openai": "^6.34.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2",
+    "@types/node": "^24.6.0",
+    "typescript": "^5.9.3"
+  }
+}
