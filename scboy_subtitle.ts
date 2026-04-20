@@ -1,8 +1,8 @@
 import { format, parse } from "node:path";
 
-import { AudioTimestamp } from "./audio.js";
-import { DEFAULT_CODEX_MODEL, gen } from "./llm.js";
-import { profileSpan } from "./perf.js";
+import { AudioTimestamp } from "./audio";
+import { DEFAULT_CODEX_MODEL, gen } from "./llm";
+import { profileSpan } from "./perf";
 
 export interface Segment {
   start: string;

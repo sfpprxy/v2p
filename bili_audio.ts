@@ -2,10 +2,10 @@ import { Client } from "@renmu/bili-api";
 import type { PlayUrlReturnType } from "@renmu/bili-api/dist/types/video.js";
 import { resolve } from "node:path";
 
-import { probeDurationSeconds, remuxAudio } from "./audio.js";
-import { buildBiliPartFileStem } from "./bili_utils.js";
-import { BiliVideoPart } from "./bili_video.js";
-import { profileSpan } from "./perf.js";
+import { probeDurationSeconds, remuxAudio } from "./audio";
+import { buildBiliPartFileStem } from "./bili_utils";
+import { BiliVideoPart } from "./bili_video";
+import { profileSpan } from "./perf";
 
 type PlayurlDash = NonNullable<PlayUrlReturnType["dash"]>;
 type AudioCandidate = PlayurlDash["audio"][number];

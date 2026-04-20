@@ -1,10 +1,10 @@
 import { $ } from "bun";
 import { resolve } from "node:path";
 
-import { buildBiliPartFileStem } from "./bili_utils.js";
-import { type BiliVideoPart } from "./bili_video.js";
-import { runSubtitleDownloadLimited } from "./limits.js";
-import { profileSpan } from "./perf.js";
+import { buildBiliPartFileStem } from "./bili_utils";
+import { type BiliVideoPart } from "./bili_video";
+import { runSubtitleDownloadLimited } from "./limits";
+import { profileSpan } from "./perf";
 
 export const DEFAULT_SUBTITLE_LANG = "ai-zh";
 export const DEFAULT_BROWSER = "chrome";

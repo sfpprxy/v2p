@@ -1,4 +1,4 @@
-import { createConcurrencyLimiter } from "./concurrency.js";
+import { createConcurrencyLimiter } from "./concurrency";
 
 export const AUDIO_DOWNLOAD_CONCURRENCY = readConcurrencyLimit(
   "V2P_AUDIO_DOWNLOAD_CONCURRENCY",

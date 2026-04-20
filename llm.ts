@@ -7,7 +7,7 @@ import {
   ThinkingLevel,
 } from "@google/genai";
 import OpenAI from "openai";
-import { profileSpan } from "./perf.js";
+import { profileSpan } from "./perf";
 
 let googleClient: GoogleGenAI | null = null;
 let openAIClient: OpenAI | null = null;

@@ -1,6 +1,6 @@
 import { $ } from "bun";
 import { format, parse, resolve } from "node:path";
-import { profileSpan } from "./perf.js";
+import { profileSpan } from "./perf";
 
 export type AudioSegmentRange = readonly [start: string, end: string];
 

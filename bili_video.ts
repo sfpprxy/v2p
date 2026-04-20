@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { Client } from "@renmu/bili-api";
 
-import { buildBiliClient } from "./bili_utils.js";
+import { buildBiliClient } from "./bili_utils";
 
 const SCBOY_ID = 9717562;
 

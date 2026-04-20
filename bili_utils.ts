@@ -1,7 +1,7 @@
 import { $ } from "bun";
 import { Client } from "@renmu/bili-api";
 import { resolve } from "node:path";
-import { type BiliVideoPart } from "./bili_video.js";
+import { type BiliVideoPart } from "./bili_video";
 
 export interface BiliCookieMap {
   SESSDATA?: string;

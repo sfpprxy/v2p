@@ -1,22 +1,22 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { concatAudioFiles, sliceAndConcatAudio } from "./audio.js";
-import { downloadAudio } from "./bili_audio.js";
-import { downloadSubtitle, MissingSubtitleError } from "./bili_subtitle.js";
-import { buildBiliClient, buildBiliPartFileStem } from "./bili_utils.js";
-import { BiliVideo, BiliVideoPart, BiliVideoStore } from "./bili_video.js";
+import { concatAudioFiles, sliceAndConcatAudio } from "./audio";
+import { downloadAudio } from "./bili_audio";
+import { downloadSubtitle, MissingSubtitleError } from "./bili_subtitle";
+import { buildBiliClient, buildBiliPartFileStem } from "./bili_utils";
+import { BiliVideo, BiliVideoPart, BiliVideoStore } from "./bili_video";
 import {
   createOrderedConcurrencyRunner,
   type OrderedTaskRunner,
-} from "./concurrency.js";
-import { AUDIO_DOWNLOAD_CONCURRENCY, LLM_CONCURRENCY } from "./limits.js";
-import { getProfileOutputPath, profileSpan } from "./perf.js";
-import { buildSegmentJsonPath, extractSegments } from "./scboy_subtitle.js";
+} from "./concurrency";
+import { AUDIO_DOWNLOAD_CONCURRENCY, LLM_CONCURRENCY } from "./limits";
+import { getProfileOutputPath, profileSpan } from "./perf";
+import { buildSegmentJsonPath, extractSegments } from "./scboy_subtitle";
 import {
   buildMergedOfftopicShownotes,
   type OfftopicPart,
-} from "./shownotes.js";
+} from "./shownotes";
 import { Client } from "@renmu/bili-api";
 
 const PROJECT_ROOT = import.meta.dir;

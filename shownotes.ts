@@ -1,6 +1,6 @@
-import { AudioTimestamp, probeDurationSeconds } from "./audio.js";
-import { profileSpan } from "./perf.js";
-import { parseScboySubtitleJson } from "./scboy_subtitle.js";
+import { AudioTimestamp, probeDurationSeconds } from "./audio";
+import { profileSpan } from "./perf";
+import { parseScboySubtitleJson } from "./scboy_subtitle";
 
 export interface OfftopicPart {
   page: number;
