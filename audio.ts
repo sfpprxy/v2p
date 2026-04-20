@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import { format, parse, resolve } from "node:path";
+import { profileSpan } from "./perf.js";
 
 export type AudioSegmentRange = readonly [start: string, end: string];
 
@@ -13,121 +14,144 @@ export async function sliceAndConcatAudio(
   inputPath: string,
   persistSegmentFiles = false,
 ): Promise<ConcatenatedAudioResult> {
-  if (ranges.length === 0) {
-    throw new Error("At least one audio range is required");
-  }
+  return profileSpan(
+    "sliceAndConcatAudio",
+    {
+      inputPath,
+      rangeCount: ranges.length,
+      persistSegmentFiles,
+    },
+    async (span) => {
+      if (ranges.length === 0) {
+        throw new Error("At least one audio range is required");
+      }
 
-  const resolvedInputPath = resolve(inputPath);
-  const inputFile = parse(resolvedInputPath);
-  if (inputFile.ext === "") {
-    throw new Error(`Audio file must have an extension: ${resolvedInputPath}`);
-  }
+      const resolvedInputPath = resolve(inputPath);
+      const inputFile = parse(resolvedInputPath);
+      if (inputFile.ext === "") {
+        throw new Error(`Audio file must have an extension: ${resolvedInputPath}`);
+      }
 
-  const segmentSpecs = ranges.map((range, index) =>
-    buildAudioSegmentSpec(range, index, inputFile),
-  );
-  const outputPath = format({
-    ...inputFile,
-    base: undefined,
-    name: `${inputFile.name}.offtopic`,
-    ext: inputFile.ext,
-  });
-  const concatListPath = format({
-    ...inputFile,
-    base: undefined,
-    name: `${inputFile.name}.offtopic.concat`,
-    ext: ".txt",
-  });
+      const segmentSpecs = ranges.map((range, index) =>
+        buildAudioSegmentSpec(range, index, inputFile),
+      );
+      const outputPath = format({
+        ...inputFile,
+        base: undefined,
+        name: `${inputFile.name}.offtopic`,
+        ext: inputFile.ext,
+      });
+      const concatListPath = format({
+        ...inputFile,
+        base: undefined,
+        name: `${inputFile.name}.offtopic.concat`,
+        ext: ".txt",
+      });
+      span.set({ outputPath, concatListPath });
 
-  try {
-    for (const spec of segmentSpecs) {
-      await cutAudioSegment(resolvedInputPath, spec);
-    }
+      try {
+        await Promise.all(
+          segmentSpecs.map((spec) => cutAudioSegment(resolvedInputPath, spec)),
+        );
 
-    await Bun.write(
-      concatListPath,
-      buildConcatFileContent(segmentSpecs.map((spec) => spec.outputPath)),
-    );
-    await concatAudioSegments(concatListPath, outputPath);
-  } finally {
-    await Bun.file(concatListPath)
-      .delete()
-      .catch(() => {});
-    if (!persistSegmentFiles) {
-      for (const spec of segmentSpecs) {
-        await Bun.file(spec.outputPath)
+        await Bun.write(
+          concatListPath,
+          buildConcatFileContent(segmentSpecs.map((spec) => spec.outputPath)),
+        );
+        await concatAudioSegments(concatListPath, outputPath);
+      } finally {
+        await Bun.file(concatListPath)
           .delete()
           .catch(() => {});
+        if (!persistSegmentFiles) {
+          for (const spec of segmentSpecs) {
+            await Bun.file(spec.outputPath)
+              .delete()
+              .catch(() => {});
+          }
+        }
       }
-    }
-  }
 
-  return {
-    outputPath,
-    segmentPaths: persistSegmentFiles
-      ? segmentSpecs.map((spec) => spec.outputPath)
-      : [],
-  };
+      return {
+        outputPath,
+        segmentPaths: persistSegmentFiles
+          ? segmentSpecs.map((spec) => spec.outputPath)
+          : [],
+      };
+    },
+  );
 }
 
 export async function concatAudioFiles(
   inputPaths: readonly string[],
   outputPath: string,
 ): Promise<void> {
-  if (inputPaths.length === 0) {
-    throw new Error("At least one audio file is required");
-  }
+  await profileSpan(
+    "concatAudioFiles",
+    { inputCount: inputPaths.length, outputPath },
+    async (span) => {
+      if (inputPaths.length === 0) {
+        throw new Error("At least one audio file is required");
+      }
 
-  const resolvedInputPaths = inputPaths.map((path) => resolve(path));
-  const resolvedOutputPath = resolve(outputPath);
-  const outputFile = parse(resolvedOutputPath);
-  const concatListPath = format({
-    ...outputFile,
-    base: undefined,
-    name: `${outputFile.name}.concat`,
-    ext: ".txt",
-  });
+      const resolvedInputPaths = inputPaths.map((path) => resolve(path));
+      const resolvedOutputPath = resolve(outputPath);
+      const outputFile = parse(resolvedOutputPath);
+      const concatListPath = format({
+        ...outputFile,
+        base: undefined,
+        name: `${outputFile.name}.concat`,
+        ext: ".txt",
+      });
+      span.set({ concatListPath });
 
-  try {
-    await Bun.write(concatListPath, buildConcatFileContent(resolvedInputPaths));
-    await concatAudioSegments(concatListPath, resolvedOutputPath);
-  } finally {
-    await Bun.file(concatListPath)
-      .delete()
-      .catch(() => {});
-  }
+      try {
+        await Bun.write(concatListPath, buildConcatFileContent(resolvedInputPaths));
+        await concatAudioSegments(concatListPath, resolvedOutputPath);
+      } finally {
+        await Bun.file(concatListPath)
+          .delete()
+          .catch(() => {});
+      }
+    },
+  );
 }
 
 export async function remuxAudio(
   inputPath: string,
   outputPath: string,
 ): Promise<void> {
-  await $`ffmpeg ${[
-    "-y",
-    "-i",
-    inputPath,
-    "-vn",
-    "-acodec",
-    "copy",
-    outputPath,
-  ]}`.quiet();
+  await profileSpan("remuxAudio", { inputPath, outputPath }, async () => {
+    await $`ffmpeg ${[
+      "-y",
+      "-i",
+      inputPath,
+      "-vn",
+      "-acodec",
+      "copy",
+      outputPath,
+    ]}`.quiet();
+  });
 }
 
 export async function probeDurationSeconds(path: string): Promise<number> {
-  const stdout = await $`ffprobe ${[
-    "-v",
-    "error",
-    "-show_entries",
-    "format=duration",
-    "-of",
-    "default=noprint_wrappers=1:nokey=1",
-    path,
-  ]}`.text();
-  const value = Number(stdout.trim());
-  if (!Number.isFinite(value)) {
-    throw new Error(`Cannot probe duration for file: ${path}`);
-  }
-  return value;
+  return profileSpan("probeDurationSeconds", { path }, async (span) => {
+    const stdout = await $`ffprobe ${[
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      path,
+    ]}`.text();
+    const value = Number(stdout.trim());
+    if (!Number.isFinite(value)) {
+      throw new Error(`Cannot probe duration for file: ${path}`);
+    }
+    span.set({ probedDurationSeconds: value });
+    return value;
+  });
 }
 
 interface AudioSegmentSpec {
@@ -168,19 +192,30 @@ async function cutAudioSegment(
   inputPath: string,
   spec: AudioSegmentSpec,
 ): Promise<void> {
-  await $`ffmpeg ${[
-    "-y",
-    "-ss",
-    spec.startForFfmpeg,
-    "-i",
-    inputPath,
-    "-t",
-    spec.durationSeconds.toFixed(3),
-    "-vn",
-    "-acodec",
-    "copy",
-    spec.outputPath,
-  ]}`.quiet();
+  await profileSpan(
+    "cutAudioSegment",
+    {
+      inputPath,
+      outputPath: spec.outputPath,
+      start: spec.start,
+      durationSeconds: spec.durationSeconds,
+    },
+    async () => {
+      await $`ffmpeg ${[
+        "-y",
+        "-ss",
+        spec.startForFfmpeg,
+        "-i",
+        inputPath,
+        "-t",
+        spec.durationSeconds.toFixed(3),
+        "-vn",
+        "-acodec",
+        "copy",
+        spec.outputPath,
+      ]}`.quiet();
+    },
+  );
 }
 
 function buildConcatFileContent(paths: readonly string[]): string {
@@ -191,18 +226,24 @@ async function concatAudioSegments(
   concatListPath: string,
   outputPath: string,
 ): Promise<void> {
-  await $`ffmpeg ${[
-    "-y",
-    "-f",
-    "concat",
-    "-safe",
-    "0",
-    "-i",
-    concatListPath,
-    "-c",
-    "copy",
-    outputPath,
-  ]}`.quiet();
+  await profileSpan(
+    "concatAudioSegments",
+    { concatListPath, outputPath },
+    async () => {
+      await $`ffmpeg ${[
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        concatListPath,
+        "-c",
+        "copy",
+        outputPath,
+      ]}`.quiet();
+    },
+  );
 }
 
 function escapeConcatFilePath(path: string): string {

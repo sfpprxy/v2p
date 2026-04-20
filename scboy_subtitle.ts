@@ -2,6 +2,7 @@ import { format, parse } from "node:path";
 
 import { AudioTimestamp } from "./audio.js";
 import { DEFAULT_CODEX_MODEL, gen } from "./llm.js";
+import { profileSpan } from "./perf.js";
 
 export interface Segment {
   start: string;
@@ -17,48 +18,58 @@ export async function extractSegments(
   llmModel: string = DEFAULT_CODEX_MODEL,
   shouldLog = true,
 ): Promise<Segments> {
-  let segments: Segments | null = null;
-  const normalizedPartTitle = normalizePartTitle(partTitle);
-  const segmentJsonPath = buildSegmentJsonPath(subtitlePath, ".segments");
+  return profileSpan(
+    "extractSegments",
+    { subtitlePath, partTitle, llmModel },
+    async (span) => {
+      let segments: Segments | null = null;
+      const normalizedPartTitle = normalizePartTitle(partTitle);
+      const segmentJsonPath = buildSegmentJsonPath(subtitlePath, ".segments");
 
-  if (shouldLog) {
-    console.log(`[extractSegments:start] ${subtitlePath}`);
-  }
-
-  try {
-    const hasSavedSegments = await Bun.file(segmentJsonPath).exists();
-    if (hasSavedSegments) {
-      const existingSegmentsText = await Bun.file(segmentJsonPath).text();
-      segments = parseScboySubtitleJson(existingSegmentsText);
       if (shouldLog) {
-        console.log(`[extractSegments:skip] exists ${segmentJsonPath}`);
+        console.log(`[extractSegments:start] ${subtitlePath}`);
       }
-      return segments;
-    }
 
-    const subtitleText = await Bun.file(subtitlePath).text();
-    const responseText = await gen(
-      llmModel,
-      buildScboySubtitlePrompt(normalizedPartTitle, subtitleText),
-    );
-    segments = parseScboySubtitleJson(responseText);
-    await saveExtractedSegments(subtitlePath, segments);
-    return segments;
-  } catch (error) {
-    console.error("[extractSegments:error]", {
-      subtitlePath,
-      partTitle,
-      llmModel,
-      error,
-    });
-    throw error;
-  } finally {
-    if (shouldLog) {
-      console.log(
-        `[extractSegments:end] ${segments == null ? "error" : "ok"} ${subtitlePath}${segments == null ? "" : ` ${segments.length}`}`,
-      );
-    }
-  }
+      try {
+        const hasSavedSegments = await Bun.file(segmentJsonPath).exists();
+        span.set({ cacheHit: hasSavedSegments, segmentJsonPath });
+        if (hasSavedSegments) {
+          const existingSegmentsText = await Bun.file(segmentJsonPath).text();
+          segments = parseScboySubtitleJson(existingSegmentsText);
+          span.set({ segmentCount: segments.length });
+          if (shouldLog) {
+            console.log(`[extractSegments:skip] exists ${segmentJsonPath}`);
+          }
+          return segments;
+        }
+
+        const subtitleText = await Bun.file(subtitlePath).text();
+        span.set({ subtitleBytes: subtitleText.length });
+        const responseText = await gen(
+          llmModel,
+          buildScboySubtitlePrompt(normalizedPartTitle, subtitleText),
+        );
+        segments = parseScboySubtitleJson(responseText);
+        span.set({ segmentCount: segments.length });
+        await saveExtractedSegments(subtitlePath, segments);
+        return segments;
+      } catch (error) {
+        console.error("[extractSegments:error]", {
+          subtitlePath,
+          partTitle,
+          llmModel,
+          error,
+        });
+        throw error;
+      } finally {
+        if (shouldLog) {
+          console.log(
+            `[extractSegments:end] ${segments == null ? "error" : "ok"} ${subtitlePath}${segments == null ? "" : ` ${segments.length}`}`,
+          );
+        }
+      }
+    },
+  );
 }
 
 export function parseScboySubtitleJson(responseText: string): Segments {

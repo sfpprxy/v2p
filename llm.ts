@@ -7,6 +7,7 @@ import {
   ThinkingLevel,
 } from "@google/genai";
 import OpenAI from "openai";
+import { profileSpan } from "./perf.js";
 
 let googleClient: GoogleGenAI | null = null;
 let openAIClient: OpenAI | null = null;
@@ -47,7 +48,11 @@ export async function gen(
     );
   }
 
-  return generator(resolvedModel, contents);
+  return profileSpan(
+    "llm.gen",
+    { model: resolvedModel, backend: generator.name || "anonymous" },
+    async () => generator(resolvedModel, contents),
+  );
 }
 
 export async function genGoogle(

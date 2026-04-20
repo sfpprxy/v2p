@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { probeDurationSeconds, remuxAudio } from "./audio.js";
 import { buildBiliPartFileStem } from "./bili_utils.js";
 import { BiliVideoPart } from "./bili_video.js";
+import { profileSpan } from "./perf.js";
 
 type PlayurlDash = NonNullable<PlayUrlReturnType["dash"]>;
 type AudioCandidate = PlayurlDash["audio"][number];
@@ -91,55 +92,114 @@ export async function downloadAudio(
     `${buildBiliPartFileStem(videoPart)}.m4a`,
   );
   const tempPath = `${outputPath}.download.m4s`;
-  let succeeded = false;
 
-  if (shouldLog) {
-    console.log(`[downloadAudio:start] ${outputPath}`);
-  }
+  return profileSpan(
+    "downloadAudio",
+    {
+      bvid: videoPart.bvid,
+      page: videoPart.page,
+      title: videoPart.tittle,
+      outputPath,
+    },
+    async (span) => {
+      let succeeded = false;
 
-  if (await Bun.file(outputPath).exists()) {
-    succeeded = true;
-    if (shouldLog) {
-      console.log(`[downloadAudio:skip] exists ${outputPath}`);
-      console.log(`[downloadAudio:end] ok ${outputPath}`);
-    }
-    return outputPath;
-  }
+      if (shouldLog) {
+        console.log(`[downloadAudio:start] ${outputPath}`);
+      }
 
-  try {
-    const audioStreamSelector = new AudioStreamSelector(client);
-    const audioUrl = await audioStreamSelector.getBestAudioUrl(videoPart);
-    const response = await fetch(audioUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        Referer: `https://www.bilibili.com/video/${videoPart.bvid}/`,
-      },
-    });
-    if (!response.ok || !response.body) {
-      throw new Error(
-        `Failed to download stream: ${response.status} ${response.statusText}`,
-      );
-    }
+      if (await Bun.file(outputPath).exists()) {
+        succeeded = true;
+        span.set({ cacheHit: true });
+        if (shouldLog) {
+          console.log(`[downloadAudio:skip] exists ${outputPath}`);
+          console.log(`[downloadAudio:end] ok ${outputPath}`);
+        }
+        return outputPath;
+      }
 
-    await Bun.write(tempPath, response);
+      span.set({ cacheHit: false, tempPath });
+      try {
+        const audioStreamSelector = new AudioStreamSelector(client);
+        const audioUrl = await profileSpan(
+          "downloadAudio.playurl",
+          {
+            bvid: videoPart.bvid,
+            page: videoPart.page,
+          },
+          async () => audioStreamSelector.getBestAudioUrl(videoPart),
+        );
 
-    await remuxAudio(tempPath, outputPath);
-    const durationSeconds = await probeDurationSeconds(outputPath);
-    validateDuration(durationSeconds, videoPart.duration);
-    succeeded = true;
-  } catch (error) {
-    await Bun.file(outputPath).delete().catch(() => {});
-    throw error;
-  } finally {
-    await Bun.file(tempPath).delete().catch(() => {});
-    if (shouldLog) {
-      console.log(
-        `[downloadAudio:end] ${succeeded ? "ok" : "error"} ${outputPath}`,
-      );
-    }
-  }
+        await profileSpan(
+          "downloadAudio.fetch",
+          {
+            bvid: videoPart.bvid,
+            page: videoPart.page,
+            outputPath: tempPath,
+          },
+          async (fetchSpan) => {
+            const response = await fetch(audioUrl, {
+              headers: {
+                "User-Agent": "Mozilla/5.0",
+                Referer: `https://www.bilibili.com/video/${videoPart.bvid}/`,
+              },
+            });
+            const contentLength = Number(
+              response.headers.get("content-length") ?? "",
+            );
+            fetchSpan.set({
+              responseStatus: response.status,
+              contentLength: Number.isFinite(contentLength)
+                ? contentLength
+                : undefined,
+            });
+            if (!response.ok || !response.body) {
+              throw new Error(
+                `Failed to download stream: ${response.status} ${response.statusText}`,
+              );
+            }
 
-  return outputPath;
+            const sink = Bun.file(tempPath).writer();
+            const responseBody =
+              response.body as unknown as AsyncIterable<Uint8Array>;
+            let downloadedBytes = 0;
+            let sinkClosed = false;
+            try {
+              for await (const value of responseBody) {
+                downloadedBytes += value.byteLength;
+                sink.write(value);
+              }
+              await sink.end();
+              sinkClosed = true;
+            } finally {
+              if (!sinkClosed) {
+                await Promise.resolve(sink.end()).catch(() => {});
+              }
+            }
+            fetchSpan.set({ downloadedBytes });
+          },
+        );
+
+        await remuxAudio(tempPath, outputPath);
+        const durationSeconds = await probeDurationSeconds(outputPath);
+        span.set({ durationSeconds });
+        validateDuration(durationSeconds, videoPart.duration);
+        succeeded = true;
+      } catch (error) {
+        await Bun.file(outputPath).delete().catch(() => {});
+        throw error;
+      } finally {
+        await Bun.file(tempPath).delete().catch(() => {});
+        if (shouldLog) {
+          console.log(
+            `[downloadAudio:end] ${succeeded ? "ok" : "error"} ${outputPath}`,
+          );
+        }
+      }
+
+      return outputPath;
+    },
+  );
 }
 
 function validateDuration(
