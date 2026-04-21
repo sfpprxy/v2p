@@ -85,7 +85,7 @@ export async function downloadAudio(
   videoPart: BiliVideoPart,
   client: Client,
   outputDir = ".",
-  shouldLog = true,
+  shouldLog = false,
 ): Promise<string> {
   const outputPath = resolve(
     outputDir,
@@ -186,10 +186,14 @@ export async function downloadAudio(
         validateDuration(durationSeconds, videoPart.duration);
         succeeded = true;
       } catch (error) {
-        await Bun.file(outputPath).delete().catch(() => {});
+        await Bun.file(outputPath)
+          .delete()
+          .catch(() => {});
         throw error;
       } finally {
-        await Bun.file(tempPath).delete().catch(() => {});
+        await Bun.file(tempPath)
+          .delete()
+          .catch(() => {});
         if (shouldLog) {
           console.log(
             `[downloadAudio:end] ${succeeded ? "ok" : "error"} ${outputPath}`,

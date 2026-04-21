@@ -34,7 +34,7 @@ export async function extractSegments(
   subtitlePath: string,
   partTitle: string,
   llmModel: string = DEFAULT_CODEX_MODEL,
-  shouldLog = true,
+  shouldLog = false,
 ): Promise<ExtractSegmentsResult> {
   return profileSpan(
     "extractSegments",
@@ -318,14 +318,15 @@ function fixScboySubtitleSegmentBoundary(
       continue;
     }
 
-    const fixedTimestampBetweenSubtitleBlocks = fixTimestampBetweenSubtitleBlocks(
-      timestamp,
-      boundary,
-      currentBlock,
-      nextBlock,
-      index,
-      fixes,
-    );
+    const fixedTimestampBetweenSubtitleBlocks =
+      fixTimestampBetweenSubtitleBlocks(
+        timestamp,
+        boundary,
+        currentBlock,
+        nextBlock,
+        index,
+        fixes,
+      );
     if (fixedTimestampBetweenSubtitleBlocks !== null) {
       return fixedTimestampBetweenSubtitleBlocks;
     }
@@ -372,10 +373,12 @@ function fixTimestampInsideSubtitleBlock(
 ): string | null {
   const timestampMilliseconds =
     AudioTimestamp.parseSegmentTimestampToMilliseconds(timestamp);
-  const startMilliseconds =
-    AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.start);
-  const endMilliseconds =
-    AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.end);
+  const startMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(
+    currentBlock.start,
+  );
+  const endMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(
+    currentBlock.end,
+  );
   if (
     timestampMilliseconds <= startMilliseconds ||
     timestampMilliseconds >= endMilliseconds
@@ -406,8 +409,9 @@ function fixTimestampBetweenSubtitleBlocks(
 ): string | null {
   const timestampMilliseconds =
     AudioTimestamp.parseSegmentTimestampToMilliseconds(timestamp);
-  const endMilliseconds =
-    AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.end);
+  const endMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(
+    currentBlock.end,
+  );
   const nextStartMilliseconds =
     AudioTimestamp.parseSegmentTimestampToMilliseconds(nextBlock.start);
 

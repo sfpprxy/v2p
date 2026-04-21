@@ -34,7 +34,7 @@ export async function downloadSubtitle(
   videoPart: BiliVideoPart,
   outputDir: string,
   browser = DEFAULT_BROWSER,
-  shouldLog = true,
+  shouldLog = false,
 ): Promise<string> {
   const outputTemplate = resolve(
     outputDir,
