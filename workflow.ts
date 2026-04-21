@@ -14,6 +14,7 @@ import {
 } from "./concurrency";
 import { AUDIO_DOWNLOAD_CONCURRENCY, LLM_CONCURRENCY } from "./limits";
 import { getProfileOutputPath, profileSpan } from "./perf";
+import { stageEpisodes } from "./podcast";
 import { buildSegmentJsonPath, extractSegments } from "./scboy_subtitle";
 import {
   buildMergedOfftopicShownotes,
@@ -46,8 +47,8 @@ interface VideoWithParts {
 async function processVideos(
   llmModel: string,
   dateInTitle?: string | [string, string] | string[] | null,
-): Promise<void> {
-  await profileSpan(
+): Promise<string[]> {
+  return profileSpan(
     "processVideos",
     {
       llmModel,
@@ -107,13 +108,24 @@ async function processVideos(
         );
 
         progressBar.start(totalPartCount, 0, { title: "" });
+        const podcastOutputDirectories: string[] = [];
         try {
           for (const { video, parts } of videosWithParts) {
-            await processVideo(video, parts, client, llmModel, progressBar);
+            const podcastOutputDirectory = await processVideo(
+              video,
+              parts,
+              client,
+              llmModel,
+              progressBar,
+            );
+            if (podcastOutputDirectory !== null) {
+              podcastOutputDirectories.push(podcastOutputDirectory);
+            }
           }
         } finally {
           progressBar.stop();
         }
+        return podcastOutputDirectories;
       } finally {
         store.close();
       }
@@ -127,8 +139,8 @@ async function processVideo(
   client: ReturnType<typeof buildBiliClient>,
   llmModel: string,
   progressBar: SingleBar,
-): Promise<void> {
-  await profileSpan(
+): Promise<string | null> {
+  return profileSpan(
     "processVideo",
     { bvid: video.bvid, title: video.title, llmModel },
     async (span) => {
@@ -159,19 +171,63 @@ async function processVideo(
         processablePartPages,
         LLM_CONCURRENCY,
       );
-      const processedPartSettledResults = await Promise.allSettled(
-        parts.map((part) =>
-          processPart(
-            part,
-            client,
-            outputDir,
-            runAudioDownloadOrdered,
-            runLlmOrdered,
+      const processedPartResults: ProcessPartResult[] = [];
+      for (const part of parts) {
+        try {
+          processedPartResults.push(
+            await processPart(
+              part,
+              client,
+              outputDir,
+              runAudioDownloadOrdered,
+              runLlmOrdered,
+              llmModel,
+            ),
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await writeVideoReport(reportPath, {
+            bvid: video.bvid,
+            title: video.title,
             llmModel,
-          ).finally(() => progressBar.increment()),
-        ),
+            processingTime: formatProcessingTime(
+              performance.now() - videoStartedMs,
+            ),
+            status: "error",
+            parts: [
+              ...processedPartResults.map((result) => result.report),
+              {
+                page: part.page,
+                title: part.tittle,
+                durationSeconds: part.duration,
+                processingTime: formatProcessingTime(
+                  performance.now() - videoStartedMs,
+                ),
+                status: "error",
+                error: {
+                  name: error instanceof Error ? error.name : "Error",
+                  message,
+                },
+              },
+            ],
+            error: {
+              name: error instanceof Error ? error.name : "Error",
+              message,
+            },
+          } satisfies VideoReport);
+          throw error;
+        } finally {
+          progressBar.increment();
+        }
+      }
+      const processedPartSettledResults = processedPartResults.map(
+        (value) =>
+          ({
+            status: "fulfilled",
+            value,
+          }) satisfies PromiseFulfilledResult<ProcessPartResult>,
       );
-      const { partReports, processedParts, mergePaths, firstRejectedResult } =
+      const { partReports, processedParts, mergePaths } =
         summarizeProcessedPartResults(
           processedPartSettledResults,
           parts,
@@ -205,41 +261,16 @@ async function processVideo(
       const processingTime = formatProcessingTime(
         performance.now() - videoStartedMs,
       );
-      await writeVideoReport(
-        reportPath,
-        firstRejectedResult === undefined
-          ? ({
-              bvid: video.bvid,
-              title: video.title,
-              llmModel,
-              processingTime,
-              status: "ok",
-              parts: partReports,
-            } satisfies VideoReport)
-          : ({
-              bvid: video.bvid,
-              title: video.title,
-              llmModel,
-              processingTime,
-              status: "error",
-              paths: mergePaths,
-              parts: partReports,
-              error: {
-                name:
-                  firstRejectedResult.reason instanceof Error
-                    ? firstRejectedResult.reason.name
-                    : "Error",
-                message:
-                  firstRejectedResult.reason instanceof Error
-                    ? firstRejectedResult.reason.message
-                    : String(firstRejectedResult.reason),
-              },
-            } satisfies VideoReport),
-      );
+      await writeVideoReport(reportPath, {
+        bvid: video.bvid,
+        title: video.title,
+        llmModel,
+        processingTime,
+        status: "ok",
+        parts: partReports,
+      } satisfies VideoReport);
 
-      if (firstRejectedResult !== undefined) {
-        throw firstRejectedResult.reason;
-      }
+      return processedParts.length === 0 ? null : outputDir;
     },
   );
 }
@@ -335,16 +366,14 @@ async function processPart(
           );
         }
 
-        const [audioPath, extractResult] = await Promise.all([
-          runAudioDownloadOrdered(part.page, () =>
-            downloadAudio(part, client, outputDir),
-          ),
-          runLlmOrdered(part.page, () =>
-            extractSegments(subtitlePath, part.tittle, llmModel),
-          ),
-        ]);
+        const extractResult = await runLlmOrdered(part.page, () =>
+          extractSegments(subtitlePath, part.tittle, llmModel),
+        );
         const { segments, fixes } = extractResult;
         span.set({ segmentCount: segments.length });
+        const audioPath = await runAudioDownloadOrdered(part.page, () =>
+          downloadAudio(part, client, outputDir),
+        );
 
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
@@ -457,5 +486,6 @@ if (import.meta.main) {
       throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
   }
 
-  await processVideos(llmModel, "2026-02-14");
+  const podcastOutputDirectories = await processVideos(llmModel, "2026-02-14");
+  await stageEpisodes(podcastOutputDirectories);
 }

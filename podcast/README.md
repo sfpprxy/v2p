@@ -7,10 +7,16 @@
 - `site/`
   GitHub Pages 发布产物目录。这个目录是生成物，不进版本库。
 
-发布路径固定为两步：
+日常发布入口：
 
-1. 在本地运行 `bun run podcast:stage -- <output-dir>`
-2. 推送到 GitHub，让 Actions 重建并发布 `feed.xml`
+- 在本地运行 `bun run workflow.ts`
+- 推送到 GitHub，让 Actions 重建并发布 `feed.xml`
+
+`workflow.ts` 会在视频处理成功后自动把本次生成的 `output/` 单集目录交给
+`podcast:stage` 的内部逻辑。发布层会先读取对应的
+`podcast/episodes/<year>/<episode>.json`，用本地音频、shownotes、标题、发布时间、
+大小、时长和 R2 object key 重建预期 manifest；如果和已有 manifest 一致，就跳过 R2
+上传和 manifest 写入。只有新增或发生差异的单集会重新上传音频并更新 manifest。
 
 本地发布依赖的 R2 环境变量现在只有：
 
@@ -24,7 +30,7 @@
 命令职责分工：
 
 - `bun run podcast:stage -- <output-dir>`
-  这是“发布一集”的本地入口。它会读取 `output/` 里的音频和 shownotes，上传音频到 R2，写入 `podcast/episodes/<year>/<episode>.json`，然后重建一次本地 `feed.xml`。
+  这是“发布一集”的手动入口。它会读取 `output/` 里的音频和 shownotes，检测 manifest 是否有差异；有差异才上传音频到 R2、写入 `podcast/episodes/<year>/<episode>.json`，最后重建一次本地 `feed.xml`。
 - `bun run podcast:build`
   这是“纯重建 feed”的入口。它不会读取 `output/`，也不会上传 R2，只会基于仓库里已有的 `podcast/episodes/**/*.json` 重建 `podcast/site/feed.xml` 和 `index.html`。
 
