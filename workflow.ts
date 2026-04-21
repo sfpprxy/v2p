@@ -557,24 +557,17 @@ async function runGit(
 async function readGitDiffQuietStatus(
   args: readonly string[],
 ): Promise<"clean" | "dirty"> {
-  const result = await $`
-    if git ${args}; then
-      echo clean
-    else
-      code=$?
-      if [ "$code" -eq 1 ]; then
-        echo dirty
-      else
-        exit "$code"
-      fi
-    fi
-  `
+  const result = await $`git ${args}`
     .cwd(PROJECT_ROOT)
+    .nothrow()
     .quiet();
 
-  const status = result.stdout.toString().trim();
-  if (status !== "clean" && status !== "dirty") {
-    throw new Error(`Unexpected git diff status: ${status}`);
+  if (result.exitCode === 0) {
+    return "clean";
   }
-  return status;
+  if (result.exitCode === 1) {
+    return "dirty";
+  }
+
+  throw new Error(`Git diff status check failed with code ${result.exitCode}`);
 }
