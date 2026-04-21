@@ -10,13 +10,16 @@
 日常发布入口：
 
 - 在本地运行 `bun run workflow.ts`
-- 推送到 GitHub，让 Actions 重建并发布 `feed.xml`
+- 等待 GitHub Actions 重建并发布 `feed.xml`
 
 `workflow.ts` 会在视频处理成功后自动把本次生成的 `output/` 单集目录交给
 `podcast:stage` 的内部逻辑。发布层会先读取对应的
 `podcast/episodes/<year>/<episode>.json`，用本地音频、shownotes、标题、发布时间、
 大小、时长和 R2 object key 重建预期 manifest；如果和已有 manifest 一致，就跳过 R2
 上传和 manifest 写入。只有新增或发生差异的单集会重新上传音频并更新 manifest。
+随后 `workflow.ts` 会自动暂存 `podcast/episodes`，有发布差异时提交
+`Publish podcast episodes`，并把当前分支推送到 upstream。推送后，GitHub Actions
+会基于已提交的 manifest 重建并发布 feed。
 
 本地发布依赖的 R2 环境变量现在只有：
 

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { $ } from "bun";
 import chalk from "chalk";
 import { Presets, SingleBar } from "cli-progress";
 import { concatAudioFiles, sliceAndConcatAudio } from "./audio";
@@ -33,6 +34,7 @@ import { Client } from "@renmu/bili-api";
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
 const DATE_IN_TITLE_PATTERN = /(^|[^0-9])(\d{1,2})月(\d{1,2})(?:号|日)/u;
+const PODCAST_RELEASE_PATHS = ["podcast/episodes"];
 
 interface VideoOutputContext {
   outputDir: string;
@@ -488,4 +490,91 @@ if (import.meta.main) {
 
   const podcastOutputDirectories = await processVideos(llmModel, "2026-02-14");
   await stageEpisodes(podcastOutputDirectories);
+  await publishPodcastRelease();
+}
+
+async function publishPodcastRelease(): Promise<void> {
+  for (const releasePath of PODCAST_RELEASE_PATHS) {
+    await runGit(["add", releasePath]);
+  }
+
+  const stagedDiffStatus = await readGitDiffQuietStatus(
+    ["diff", "--cached", "--quiet", "--", ...PODCAST_RELEASE_PATHS],
+  );
+  if (stagedDiffStatus === "dirty") {
+    await runGit([
+      "commit",
+      "-m",
+      "Publish podcast episodes",
+      "--",
+      ...PODCAST_RELEASE_PATHS,
+    ]);
+  }
+
+  const upstreamResult = await runGit([
+    "rev-parse",
+    "--abbrev-ref",
+    "--symbolic-full-name",
+    "@{u}",
+  ]);
+
+  const aheadResult = await runGit(
+    [
+      "rev-list",
+      "--count",
+      `${upstreamResult.stdout.toString().trim()}..HEAD`,
+    ],
+  );
+  if (Number(aheadResult.stdout.toString().trim()) === 0) {
+    console.log("Podcast release unchanged; nothing to push.");
+    return;
+  }
+
+  const releaseAheadStatus = await readGitDiffQuietStatus(
+    [
+      "diff",
+      "--quiet",
+      `${upstreamResult.stdout.toString().trim()}..HEAD`,
+      "--",
+      ...PODCAST_RELEASE_PATHS,
+    ],
+  );
+  if (releaseAheadStatus === "clean") {
+    console.log("Podcast release unchanged; nothing to push.");
+    return;
+  }
+
+  await runGit(["push"], false);
+}
+
+async function runGit(
+  args: readonly string[],
+  quiet = true,
+): Promise<$.ShellOutput> {
+  return $`git ${args}`.cwd(PROJECT_ROOT).quiet(quiet);
+}
+
+async function readGitDiffQuietStatus(
+  args: readonly string[],
+): Promise<"clean" | "dirty"> {
+  const result = await $`
+    if git ${args}; then
+      echo clean
+    else
+      code=$?
+      if [ "$code" -eq 1 ]; then
+        echo dirty
+      else
+        exit "$code"
+      fi
+    fi
+  `
+    .cwd(PROJECT_ROOT)
+    .quiet();
+
+  const status = result.stdout.toString().trim();
+  if (status !== "clean" && status !== "dirty") {
+    throw new Error(`Unexpected git diff status: ${status}`);
+  }
+  return status;
 }
