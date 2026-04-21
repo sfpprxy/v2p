@@ -756,10 +756,40 @@ async function publishPodcastRelease(): Promise<void> {
     ["diff", "--cached", "--quiet", "--", ...PODCAST_RELEASE_PATHS],
   );
   if (stagedDiffStatus === "dirty") {
+    const stagedEpisodePathResult = await runGit([
+      "diff",
+      "--cached",
+      "--name-only",
+      "--",
+      ...PODCAST_RELEASE_PATHS,
+    ]);
+    const stagedEpisodePaths = stagedEpisodePathResult.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter((path) => path.endsWith(".json"));
+    if (stagedEpisodePaths.length === 0) {
+      throw new Error("Staged podcast release has no episode manifests");
+    }
+    const episodeLabels = stagedEpisodePaths.map((path) => {
+      const match = path.match(/^podcast\/episodes\/([^/]+)\/([^/]+)\.json$/u);
+      if (match === null) {
+        throw new Error(`Invalid staged podcast episode path: ${path}`);
+      }
+      return `${match[1]}/${match[2]}`;
+    });
+    const visibleEpisodeLabels = episodeLabels.slice(0, 5);
+    const hiddenEpisodeCount = episodeLabels.length - visibleEpisodeLabels.length;
+    const commitSubject = `Publish podcast episode${
+      episodeLabels.length === 1 ? "" : "s"
+    }: ${visibleEpisodeLabels.join(", ")}${
+      hiddenEpisodeCount === 0 ? "" : ` and ${hiddenEpisodeCount} more`
+    }`;
+
     await runGit([
       "commit",
       "-m",
-      "Publish podcast episodes",
+      commitSubject,
       "--",
       ...PODCAST_RELEASE_PATHS,
     ]);
