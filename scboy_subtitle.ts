@@ -39,7 +39,7 @@ export interface ExtractSegmentsResult {
 }
 
 export type Segments = Segment[];
-const MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS = 5_000;
+const MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS = 15_000;
 
 export async function extractSegments(
   subtitlePath: string,
@@ -69,10 +69,8 @@ export async function extractSegments(
 
       try {
         const originalSubtitleText = await Bun.file(subtitlePath).text();
-        const {
-          subtitleText,
-          fixes: subtitleTextFixes,
-        } = fillEmptySubtitleBlocks(originalSubtitleText);
+        const { subtitleText, fixes: subtitleTextFixes } =
+          fillEmptySubtitleBlocks(originalSubtitleText);
         span.set({
           subtitleBytes: subtitleText.length,
           subtitleFixCount: subtitleTextFixes.length,
@@ -553,7 +551,9 @@ function fillEmptySubtitleBlocks(subtitleText: string): {
     .join("\n\n");
 
   if (subtitleBlockTexts.length === 0) {
-    throw new Error("Subtitle text does not contain any valid timestamp blocks");
+    throw new Error(
+      "Subtitle text does not contain any valid timestamp blocks",
+    );
   }
 
   return {
@@ -562,7 +562,9 @@ function fillEmptySubtitleBlocks(subtitleText: string): {
   };
 }
 
-function readSubtitleBlocks(subtitleText: string): ReadonlyArray<SubtitleBlock> {
+function readSubtitleBlocks(
+  subtitleText: string,
+): ReadonlyArray<SubtitleBlock> {
   const normalizedSubtitleText = subtitleText.replace(/\r\n/g, "\n").trim();
   const subtitleBlockTexts = normalizedSubtitleText.split(/\n{2,}/);
   const subtitleBlocks = subtitleBlockTexts.map((rawBlock) => {

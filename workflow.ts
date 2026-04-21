@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { $ } from "bun";
 import chalk from "chalk";
-import { Presets, SingleBar } from "cli-progress";
+import { MultiBar, Presets, SingleBar } from "cli-progress";
 import { concatAudioFiles, sliceAndConcatAudio } from "./audio";
 import { downloadAudio } from "./bili_audio";
 import { downloadSubtitle, MissingSubtitleError } from "./bili_subtitle";
@@ -52,6 +52,50 @@ interface VideoWithParts {
   parts: readonly BiliVideoPart[];
 }
 
+interface VideoPartProgressState {
+  page: number;
+  title: string;
+  status: "pending" | "running" | "ok" | "skipped" | "error";
+  startedMs: number | null;
+  processingTime: string | null;
+}
+
+interface WorkflowProgressDisplay {
+  multibar: MultiBar;
+  totalBar: SingleBar;
+}
+
+function buildProgressVideoTitle(videoTitle: string): string {
+  const dateMatch = videoTitle.match(DATE_IN_TITLE_PATTERN);
+  const shortDate =
+    dateMatch === null
+      ? null
+      : `${dateMatch[2]!.padStart(2, "0")}-${dateMatch[3]!.padStart(2, "0")}`;
+  const normalizedTitle = videoTitle
+    .replaceAll("【星际老男孩】", "")
+    .replace(DATE_IN_TITLE_PATTERN, " ")
+    .replace(/[()（）[\]【】]/gu, " ")
+    .replace(/[,:，、+]/gu, " ")
+    .replace(/-/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const titleWords = normalizedTitle
+    .split(" ")
+    .map((word) => word.trim())
+    .filter((word) => word !== "" && word !== "星际老男孩");
+  const topic = titleWords.join(" ").slice(0, 12).trim();
+  if (shortDate === null && topic === "") {
+    return videoTitle;
+  }
+  if (shortDate === null) {
+    return topic;
+  }
+  if (topic === "") {
+    return shortDate;
+  }
+  return `${shortDate} ${topic}`;
+}
+
 async function processVideos(
   llmModel: string,
   dateInTitle?: string | [string, string] | string[] | null,
@@ -97,7 +141,7 @@ async function processVideos(
         );
         span.set({ partCount: totalPartCount });
 
-        const progressBar = new SingleBar(
+        const multibar = new MultiBar(
           {
             format: [
               chalk.dim("parts"),
@@ -114,8 +158,11 @@ async function processVideos(
           },
           Presets.shades_classic,
         );
+        const progressDisplay = {
+          multibar,
+          totalBar: multibar.create(totalPartCount, 0, { title: "" }),
+        } satisfies WorkflowProgressDisplay;
 
-        progressBar.start(totalPartCount, 0, { title: "" });
         const podcastOutputDirectories: string[] = [];
         try {
           for (const { video, parts } of videosWithParts) {
@@ -124,14 +171,14 @@ async function processVideos(
               parts,
               client,
               llmModel,
-              progressBar,
+              progressDisplay,
             );
             if (podcastOutputDirectory !== null) {
               podcastOutputDirectories.push(podcastOutputDirectory);
             }
           }
         } finally {
-          progressBar.stop();
+          multibar.stop();
         }
         return podcastOutputDirectories;
       } finally {
@@ -146,52 +193,135 @@ async function processVideo(
   parts: readonly BiliVideoPart[],
   client: ReturnType<typeof buildBiliClient>,
   llmModel: string,
-  progressBar: SingleBar,
+  progressDisplay: WorkflowProgressDisplay,
 ): Promise<string | null> {
   return profileSpan(
     "processVideo",
     { bvid: video.bvid, title: video.title, llmModel },
     async (span) => {
-      progressBar.update({ title: video.title });
+      const progressVideoTitle = buildProgressVideoTitle(video.title);
+      const partProgressStates: VideoPartProgressState[] = parts.map((part) => ({
+        page: part.page,
+        title: part.tittle,
+        status: "pending",
+        startedMs: null,
+        processingTime: null,
+      }));
+      const partBars = partProgressStates.map((part) =>
+        progressDisplay.multibar.create(
+          1,
+          0,
+          buildPartProgressPayload(progressVideoTitle, part),
+          {
+            format: "{videoTitle} {label} {status} {processingTime} {title}",
+          },
+        ),
+      );
+      const updatePartProgressBars = (): void => {
+        progressDisplay.totalBar.update({ title: video.title });
+        for (const [index, part] of partProgressStates.entries()) {
+          partBars[index].update(
+            part.status === "pending" || part.status === "running" ? 0 : 1,
+            buildPartProgressPayload(progressVideoTitle, part),
+          );
+        }
+      };
+      const partTimer = setInterval(updatePartProgressBars, 100);
+      updatePartProgressBars();
       const { outputDir, reportPath } = buildVideoOutputContext(video);
       span.set({ outputDir });
       mkdirSync(outputDir, { recursive: true });
       const videoStartedMs = performance.now();
-      await writeVideoReport(reportPath, {
-        bvid: video.bvid,
-        title: video.title,
-        llmModel,
-        processingTime: formatProcessingTime(0),
-        status: "running",
-        parts: [],
-      } satisfies VideoReport);
+      try {
+        await writeVideoReport(reportPath, {
+          bvid: video.bvid,
+          title: video.title,
+          llmModel,
+          processingTime: formatProcessingTime(0),
+          status: "running",
+          parts: [],
+        } satisfies VideoReport);
 
-      span.set({ partCount: parts.length });
+        span.set({ partCount: parts.length });
 
-      const processablePartPages = parts
-        .filter((part) => part.duration >= 10)
-        .map((part) => part.page);
-      const runAudioDownloadOrdered = createOrderedConcurrencyRunner(
-        processablePartPages,
-        AUDIO_DOWNLOAD_CONCURRENCY,
-      );
-      const runLlmOrdered = createOrderedConcurrencyRunner(
-        processablePartPages,
-        LLM_CONCURRENCY,
-      );
-      const processedPartResults: ProcessPartResult[] = [];
-      for (const part of parts) {
-        try {
-          processedPartResults.push(
-            await processPart(
-              part,
-              client,
-              outputDir,
-              runAudioDownloadOrdered,
-              runLlmOrdered,
-              llmModel,
-            ),
+        const processablePartPages = parts
+          .filter((part) => part.duration >= 10)
+          .map((part) => part.page);
+        const runAudioDownloadOrdered = createOrderedConcurrencyRunner(
+          processablePartPages,
+          AUDIO_DOWNLOAD_CONCURRENCY,
+        );
+        const runLlmOrdered = createOrderedConcurrencyRunner(
+          processablePartPages,
+          LLM_CONCURRENCY,
+        );
+        const processedPartSettledResults = await Promise.allSettled(
+          parts.map(async (part, index) => {
+            partProgressStates[index].status = "running";
+            partProgressStates[index].startedMs = performance.now();
+            partProgressStates[index].processingTime = null;
+            updatePartProgressBars();
+            const partStartedMs = partProgressStates[index].startedMs;
+            if (partStartedMs === null) {
+              throw new Error(
+                `Running part is missing startedMs: ${part.bvid} p${part.page} ${part.tittle}`,
+              );
+            }
+
+            try {
+              const result = await processPart(
+                part,
+                client,
+                outputDir,
+                runAudioDownloadOrdered,
+                runLlmOrdered,
+                llmModel,
+              );
+              partProgressStates[index].status = result.report.status;
+              partProgressStates[index].processingTime = result.report.processingTime;
+              return result;
+            } catch (error) {
+              partProgressStates[index].status = "error";
+              partProgressStates[index].processingTime = formatProcessingTime(
+                performance.now() - partStartedMs,
+              );
+              throw error;
+            } finally {
+              updatePartProgressBars();
+              progressDisplay.totalBar.increment();
+            }
+          }),
+        );
+        const { partReports, processedParts, mergePaths } =
+          summarizeProcessedPartResults(
+            processedPartSettledResults,
+            parts,
+            videoStartedMs,
+            outputDir,
+            video.bvid,
           );
+        span.set({ processedPartCount: processedParts.length });
+        const firstRejectedResult = processedPartSettledResults.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (firstRejectedResult !== undefined) {
+          await writeVideoReport(reportPath, {
+            bvid: video.bvid,
+            title: video.title,
+            llmModel,
+            processingTime: formatProcessingTime(
+              performance.now() - videoStartedMs,
+            ),
+            status: "error",
+            paths: mergePaths,
+            parts: partReports,
+            error: buildWorkflowReportError(firstRejectedResult.reason),
+          } satisfies VideoReport);
+          throw firstRejectedResult.reason;
+        }
+
+        try {
+          await mergeVideoOfftopicOutputs(video.bvid, processedParts, outputDir);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await writeVideoReport(reportPath, {
@@ -202,76 +332,70 @@ async function processVideo(
               performance.now() - videoStartedMs,
             ),
             status: "error",
-            parts: [
-              ...processedPartResults.map((result) => result.report),
-              {
-                page: part.page,
-                title: part.tittle,
-                durationSeconds: part.duration,
-                processingTime: formatProcessingTime(
-                  performance.now() - videoStartedMs,
-                ),
-                status: "error",
-                error: buildWorkflowReportError(error),
-              },
-            ],
+            paths: mergePaths,
+            parts: partReports,
             error: buildWorkflowReportError(error),
           } satisfies VideoReport);
-          throw error;
-        } finally {
-          progressBar.increment();
+          throw new Error(
+            `Failed to merge outputs for ${video.bvid} ${video.title}: ${message}`,
+          );
         }
-      }
-      const processedPartSettledResults = processedPartResults.map(
-        (value) =>
-          ({
-            status: "fulfilled",
-            value,
-          }) satisfies PromiseFulfilledResult<ProcessPartResult>,
-      );
-      const { partReports, processedParts, mergePaths } =
-        summarizeProcessedPartResults(
-          processedPartSettledResults,
-          parts,
-          videoStartedMs,
-          outputDir,
-          video.bvid,
-        );
-      span.set({ processedPartCount: processedParts.length });
 
-      try {
-        await mergeVideoOfftopicOutputs(video.bvid, processedParts, outputDir);
-      } catch (error) {
+        const processingTime = formatProcessingTime(
+          performance.now() - videoStartedMs,
+        );
         await writeVideoReport(reportPath, {
           bvid: video.bvid,
           title: video.title,
           llmModel,
-          processingTime: formatProcessingTime(
-            performance.now() - videoStartedMs,
-          ),
-          status: "error",
-          paths: mergePaths,
+          processingTime,
+          status: "ok",
           parts: partReports,
-          error: buildWorkflowReportError(error),
         } satisfies VideoReport);
-        throw error;
+
+        return processedParts.length === 0 ? null : outputDir;
+      } finally {
+        clearInterval(partTimer);
+        updatePartProgressBars();
+        for (const partBar of partBars.toReversed()) {
+          progressDisplay.multibar.remove(partBar);
+        }
       }
-
-      const processingTime = formatProcessingTime(
-        performance.now() - videoStartedMs,
-      );
-      await writeVideoReport(reportPath, {
-        bvid: video.bvid,
-        title: video.title,
-        llmModel,
-        processingTime,
-        status: "ok",
-        parts: partReports,
-      } satisfies VideoReport);
-
-      return processedParts.length === 0 ? null : outputDir;
     },
   );
+}
+
+function buildPartProgressPayload(
+  videoTitle: string,
+  part: VideoPartProgressState,
+): {
+  videoTitle: string;
+  label: string;
+  status: string;
+  processingTime: string;
+  title: string;
+} {
+  const processingTime =
+    part.status === "running"
+      ? formatProcessingTime(performance.now() - (part.startedMs ?? 0))
+      : (part.processingTime ?? "-");
+  const status =
+    part.status === "pending"
+      ? chalk.dim("pending")
+      : part.status === "running"
+        ? chalk.yellow("running")
+        : part.status === "ok"
+          ? chalk.green("done")
+          : part.status === "skipped"
+            ? chalk.gray("skipped")
+            : chalk.red("error");
+  return {
+    videoTitle: chalk.dim(`[${videoTitle}]`),
+    label: chalk.dim(`P${part.page}`),
+    status,
+    processingTime: chalk.dim(processingTime),
+    title: part.title,
+  };
 }
 
 function buildVideoOutputContext(video: BiliVideo): VideoOutputContext {
