@@ -1,0 +1,17 @@
+{
+  "title": "SCBOY",
+  "description": "SCBOY 场外话题播客",
+  "language": "zh-CN",
+  "author": "SCBOY",
+  "ownerName": "SCBOY",
+  "ownerEmail": "podcast@example.com",
+  "category": "Leisure",
+  "subcategory": "Video Games",
+  "explicit": false,
+  "type": "episodic",
+  "siteUrl": "https://sfpprxy.github.io/v2p",
+  "defaultPublishTime": "08:00:00+08:00",
+  "coverImageSourcePath": "avatar-xiaoyuzhou-cover.jpg",
+  "coverImageOutputPath": "assets/cover.jpg",
+  "copyright": "SCBOY"
+}

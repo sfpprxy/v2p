@@ -4,6 +4,8 @@
 py/
 output/
 v2p.db
+podcast/site/
+podcast.config.json
 
 # Logs
 

@@ -8,6 +8,8 @@
   "scripts": {
     "build": "bunx tsc -p tsconfig.json",
     "check": "bunx tsc --noEmit -p tsconfig.json",
+    "podcast:build": "bun run podcast.ts build",
+    "podcast:stage": "bun run podcast.ts stage",
     "profile:analyze": "bun run analyze-profile.ts",
     "copy-offtopic-to-subdirs": "bun run scripts/copy-offtopic-to-subdirs.ts"
   },
