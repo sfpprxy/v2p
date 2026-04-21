@@ -30,10 +30,11 @@
 2. `.env`
    填 R2 连接信息：
    - `PODCAST_R2_ACCOUNT_ID`
-   - `PODCAST_R2_ACCESS_KEY_ID`
-   - `PODCAST_R2_SECRET_ACCESS_KEY`
+   - `PODCAST_R2_BEARER_TOKEN`
    - `PODCAST_R2_BUCKET`
    - `PODCAST_R2_PUBLIC_BASE_URL`
+
+`PODCAST_R2_BEARER_TOKEN` 是 Cloudflare 创建 token 后给你的 bearer token。脚本会在运行时调用 Cloudflare 的 token verify 接口拿到 token id，并按官方文档把 bearer token 的 SHA-256 作为 S3 `Secret Access Key`，所以不再单独保存 `Access Key ID / Secret Access Key`。
 
 发布一集：
 

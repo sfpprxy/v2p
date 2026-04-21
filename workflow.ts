@@ -395,5 +395,5 @@ async function mergeVideoOfftopicOutputs(
 }
 
 if (import.meta.main) {
-  await processVideos("2026-02-12");
+  await processVideos("2026-02-09 2026-02-11");
 }

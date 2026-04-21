@@ -12,6 +12,15 @@
 1. 在本地运行 `bun run podcast:stage -- <output-dir>`
 2. 推送到 GitHub，让 Actions 重建并发布 `feed.xml`
 
+本地发布依赖的 R2 环境变量现在只有：
+
+- `PODCAST_R2_ACCOUNT_ID`
+- `PODCAST_R2_BEARER_TOKEN`
+- `PODCAST_R2_BUCKET`
+- `PODCAST_R2_PUBLIC_BASE_URL`
+
+`podcast:stage` 会在运行时用 `PODCAST_R2_BEARER_TOKEN` 调 Cloudflare token verify 接口取回 token id，并按 Cloudflare R2 文档推导出 S3 所需的 `Access Key ID / Secret Access Key`，所以 `.env` 不再保存这两个派生值。
+
 命令职责分工：
 
 - `bun run podcast:stage -- <output-dir>`

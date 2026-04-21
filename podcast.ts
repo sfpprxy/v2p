@@ -1,4 +1,5 @@
 import { S3Client } from "bun";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -66,8 +67,7 @@ const episodeManifestSchema = z.object({
 
 const podcastUploadEnvironmentSchema = z.object({
   PODCAST_R2_ACCOUNT_ID: z.string().min(1),
-  PODCAST_R2_ACCESS_KEY_ID: z.string().min(1),
-  PODCAST_R2_SECRET_ACCESS_KEY: z.string().min(1),
+  PODCAST_R2_BEARER_TOKEN: z.string().min(1),
   PODCAST_R2_BUCKET: z.string().min(1),
   PODCAST_R2_PUBLIC_BASE_URL: z.string().url(),
 });
@@ -75,6 +75,11 @@ const podcastUploadEnvironmentSchema = z.object({
 type PodcastConfig = z.infer<typeof podcastConfigSchema>;
 type EpisodeManifest = z.infer<typeof episodeManifestSchema>;
 type PodcastUploadEnvironment = z.infer<typeof podcastUploadEnvironmentSchema>;
+
+interface PodcastUploadCredentials extends PodcastUploadEnvironment {
+  PODCAST_R2_ACCESS_KEY_ID: string;
+  PODCAST_R2_SECRET_ACCESS_KEY: string;
+}
 
 interface SourceEpisode {
   id: string;
@@ -114,7 +119,7 @@ async function main(args: string[]): Promise<void> {
 
 async function stageEpisode(outputDirectory: string): Promise<void> {
   const config = loadPodcastConfig();
-  const uploadEnvironment = loadPodcastUploadEnvironment();
+  const uploadEnvironment = await loadPodcastUploadEnvironment();
   const sourceEpisode = await readSourceEpisode(
     outputDirectory,
     config.defaultPublishTime,
@@ -181,6 +186,41 @@ function loadEpisodeManifests(): EpisodeManifest[] {
   );
 }
 
+async function loadPodcastUploadEnvironment(): Promise<PodcastUploadCredentials> {
+  const uploadEnvironment = podcastUploadEnvironmentSchema.parse(process.env);
+  const verifyResponse = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${uploadEnvironment.PODCAST_R2_ACCOUNT_ID}/tokens/verify`,
+    {
+      headers: {
+        Authorization: `Bearer ${uploadEnvironment.PODCAST_R2_BEARER_TOKEN}`,
+      },
+    },
+  );
+
+  if (!verifyResponse.ok) {
+    throw new Error(
+      `Failed to verify R2 bearer token: ${verifyResponse.status} ${verifyResponse.statusText}`,
+    );
+  }
+
+  const verifyPayload = z
+    .object({
+      success: z.literal(true),
+      result: z.object({
+        id: z.string().length(32),
+      }),
+    })
+    .parse(await verifyResponse.json());
+
+  return {
+    ...uploadEnvironment,
+    PODCAST_R2_ACCESS_KEY_ID: verifyPayload.result.id,
+    PODCAST_R2_SECRET_ACCESS_KEY: createHash("sha256")
+      .update(uploadEnvironment.PODCAST_R2_BEARER_TOKEN)
+      .digest("hex"),
+  };
+}
+
 async function readSourceEpisode(
   outputDirectory: string,
   defaultPublishTime: string,
@@ -230,7 +270,7 @@ async function readSourceEpisode(
 
 async function uploadEpisodeAudio(
   sourceEpisode: SourceEpisode,
-  uploadEnvironment: PodcastUploadEnvironment,
+  uploadEnvironment: PodcastUploadCredentials,
 ): Promise<string> {
   const audioPath = resolve(
     PROJECT_ROOT,
@@ -271,10 +311,6 @@ function writeEpisodeManifest(episodeManifest: EpisodeManifest): void {
     resolve(episodeDirectory, `${episodeManifest.episodeNumber}.json`),
     `${JSON.stringify(episodeManifest, null, 2)}\n`,
   );
-}
-
-function loadPodcastUploadEnvironment(): PodcastUploadEnvironment {
-  return podcastUploadEnvironmentSchema.parse(process.env);
 }
 
 function buildFeedXml(
