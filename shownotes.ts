@@ -36,7 +36,7 @@ export async function buildMergedOfftopicShownotes(
           const seconds = totalSeconds % 60;
           const start = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 
-          shownotes.push(`${start} P${part.page} ${segment.summary}`);
+          shownotes.push(`(${start}) P${part.page} ${segment.summary}`);
         }
 
         currentStartMilliseconds += Math.round(
