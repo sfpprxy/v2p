@@ -8,7 +8,12 @@ import { concatAudioFiles, sliceAndConcatAudio } from "./audio";
 import { downloadAudio } from "./bili_audio";
 import { downloadSubtitle, MissingSubtitleError } from "./bili_subtitle";
 import { buildBiliClient } from "./bili_utils";
-import { BiliVideo, BiliVideoPart, BiliVideoStore } from "./bili_video";
+import {
+  BiliVideo,
+  BiliVideoPart,
+  BiliVideoStore,
+  isDateValue,
+} from "./bili_video";
 import {
   createOrderedConcurrencyRunner,
   type OrderedTaskRunner,
@@ -480,7 +485,7 @@ if (import.meta.main) {
   for (const arg of process.argv.slice(2)) {
     if (arg === "gemini" || arg === "codex") {
       modelArgs.push(arg);
-    } else if (/^\d{4}-\d{2}-\d{2}$/u.test(arg)) {
+    } else if (isDateValue(arg)) {
       dateArgs.push(arg);
     } else {
       throw new Error(`Unsupported workflow argument: ${arg}`);

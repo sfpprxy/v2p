@@ -4,6 +4,7 @@ import { Client } from "@renmu/bili-api";
 import { buildBiliClient } from "./bili_utils";
 
 const SCBOY_ID = 9717562;
+const DATE_VALUE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 
 type DateInTitleFilter =
   | string
@@ -293,6 +294,9 @@ function isRateLimitError(error: unknown): boolean {
 
 function parseDateValue(value: string): Date {
   const trimmed = value.trim();
+  if (!isDateValue(trimmed)) {
+    throw new Error(`Invalid date value: ${value}`);
+  }
   const date = new Date(`${trimmed}T00:00:00`);
   if (Number.isNaN(date.getTime())) {
     throw new Error(`Invalid date value: ${value}`);
@@ -331,6 +335,10 @@ function parseDateRange(dateInTitle?: DateInTitleFilter): [Date, Date] | null {
   throw new Error(
     "dateInTitle must be a single date like '2026-02-02' or a range like '2026-02-02 2026-03-02'",
   );
+}
+
+export function isDateValue(value: string): boolean {
+  return DATE_VALUE_PATTERN.test(value);
 }
 
 if (import.meta.main) {
