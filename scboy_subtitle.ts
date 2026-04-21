@@ -176,7 +176,8 @@ function validateScboySubtitleSegments(value: Segments): void {
 
     const startMilliseconds =
       AudioTimestamp.parseSegmentTimestampToMilliseconds(start);
-    const endMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
+    const endMilliseconds =
+      AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
     if (endMilliseconds <= startMilliseconds) {
       throw new Error(
         `SC Boy subtitle response item at index ${index} has invalid range: ${start} -> ${end}`,
@@ -259,7 +260,9 @@ function readSubtitleTimestampBlocks(
   }
 
   if (subtitleBlocks.length === 0) {
-    throw new Error("Subtitle text does not contain any valid timestamp blocks");
+    throw new Error(
+      "Subtitle text does not contain any valid timestamp blocks",
+    );
   }
 
   return subtitleBlocks;
@@ -284,7 +287,8 @@ function fixScboySubtitleSegmentBoundary(
   for (const { start, end } of subtitleBlocks) {
     const startMilliseconds =
       AudioTimestamp.parseSegmentTimestampToMilliseconds(start);
-    const endMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
+    const endMilliseconds =
+      AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
     if (
       timestampMilliseconds < startMilliseconds ||
       timestampMilliseconds > endMilliseconds
@@ -292,7 +296,7 @@ function fixScboySubtitleSegmentBoundary(
       continue;
     }
 
-    const fixedTimestamp = boundary === "start" ? end : start;
+    const fixedTimestamp = boundary === "start" ? start : end;
     const fixedMilliseconds =
       AudioTimestamp.parseSegmentTimestampToMilliseconds(fixedTimestamp);
     const fixOffsetMilliseconds = Math.abs(
@@ -364,7 +368,10 @@ export function buildRelativeSegments(segments: Segments): Segments {
   });
 }
 
-export function buildSegmentJsonPath(subtitlePath: string, suffix: string): string {
+export function buildSegmentJsonPath(
+  subtitlePath: string,
+  suffix: string,
+): string {
   const parsedSubtitlePath = parse(subtitlePath);
   return format({
     ...parsedSubtitlePath,

@@ -14,7 +14,6 @@ export interface PartReportFix {
 }
 
 interface PartReportBase {
-  bvid: string;
   page: number;
   title: string;
   durationSeconds: number;
@@ -27,13 +26,6 @@ export interface PartReportOk extends PartReportBase {
   status: "ok";
   segmentCount: number;
   segmentFixes?: PartReportFix[];
-  paths: {
-    subtitlePath: string;
-    segmentJsonPath: string;
-    relativeSegmentsPath: string;
-    audioPath: string;
-    offtopicAudioPath: string;
-  };
 }
 
 export interface PartReportSkippedShort extends PartReportBase {
@@ -75,6 +67,7 @@ export interface VideoMergePaths {
 interface VideoReportBase {
   bvid: string;
   title: string;
+  llmModel: string;
   startedAt: string;
   updatedAt: string;
   parts: PartReport[];
@@ -87,7 +80,6 @@ export interface VideoReportRunning extends VideoReportBase {
 export interface VideoReportOk extends VideoReportBase {
   status: "ok";
   completedAt: string;
-  paths?: VideoMergePaths;
 }
 
 export interface VideoReportError extends VideoReportBase {
@@ -144,7 +136,6 @@ export function summarizeProcessedPartResults(
         ? result.reason.message
         : String(result.reason);
     return {
-      bvid: parts[index].bvid,
       page: parts[index].page,
       title: parts[index].tittle,
       durationSeconds: parts[index].duration,

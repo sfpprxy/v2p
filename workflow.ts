@@ -23,6 +23,7 @@ import {
   writeVideoReport,
   summarizeProcessedPartResults,
 } from "./workflow_report";
+import { DEFAULT_GEMINI_MODEL } from "./llm";
 import { Client } from "@renmu/bili-api";
 
 const PROJECT_ROOT = import.meta.dir;
@@ -76,12 +77,14 @@ async function processVideo(
     async (span) => {
       console.log(video.title);
       const { outputDir, reportPath } = buildVideoOutputContext(video);
+      const llmModel = DEFAULT_GEMINI_MODEL;
       span.set({ outputDir });
       mkdirSync(outputDir, { recursive: true });
       const startedAt = new Date().toISOString();
       await writeVideoReport(reportPath, {
         bvid: video.bvid,
         title: video.title,
+        llmModel,
         startedAt,
         updatedAt: startedAt,
         status: "running",
@@ -138,6 +141,7 @@ async function processVideo(
         await writeVideoReport(reportPath, {
           bvid: video.bvid,
           title: video.title,
+          llmModel,
           startedAt,
           updatedAt: completedAt,
           completedAt,
@@ -159,16 +163,17 @@ async function processVideo(
           ? ({
               bvid: video.bvid,
               title: video.title,
+              llmModel,
               startedAt,
               updatedAt: completedAt,
               completedAt,
               status: "ok",
-              paths: mergePaths,
               parts: partReports,
             } satisfies VideoReport)
           : ({
               bvid: video.bvid,
               title: video.title,
+              llmModel,
               startedAt,
               updatedAt: completedAt,
               completedAt,
@@ -243,7 +248,6 @@ async function processPart(
       // console.debug(part);
       const startedAt = new Date().toISOString();
       const baseReport = {
-        bvid: part.bvid,
         page: part.page,
         title: part.tittle,
         durationSeconds: part.duration,
@@ -317,13 +321,6 @@ async function processPart(
             completedAt,
             segmentCount: segments.length,
             segmentFixes: fixes,
-            paths: {
-              subtitlePath,
-              segmentJsonPath,
-              relativeSegmentsPath,
-              audioPath,
-              offtopicAudioPath: audioResult.outputPath,
-            },
           },
         } satisfies ProcessPartResult;
       } catch (error) {
