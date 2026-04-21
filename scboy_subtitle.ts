@@ -11,6 +11,10 @@ export interface Segment {
 }
 
 export interface SegmentFix {
+  type:
+    | "timestampInsideSubtitleBlock"
+    | "timestampBetweenSubtitleBlocks"
+    | "startTimestampAtPreviousSubtitleEnd";
   index: number;
   boundary: "start" | "end";
   originalTimestamp: string;
@@ -140,7 +144,7 @@ function buildScboySubtitlePrompt(
 
 字段名：start(开始时间戳)，end(结束时间戳)，summary(内容简单总结)。
 
-时间戳保留原始的精度与格式比如"01:15:03,430"。以纯JSON形式返回, JSON以外不要加其他任何内容，便于我直接解析。
+时间戳必须直接使用字幕时间行里的原始边界值，保留原始的精度与格式比如"01:15:03,430"。start必须使用某条字幕时间行左侧的开始时间戳，end必须使用某条字幕时间行右侧的结束时间戳，不要生成字幕中间的时间点。以纯JSON形式返回, JSON以外不要加其他任何内容，便于我直接解析。
 
 字幕文本如下：
 ${subtitleText}`;
@@ -282,43 +286,176 @@ function fixScboySubtitleSegmentBoundary(
     return timestamp;
   }
 
-  const timestampMilliseconds =
-    AudioTimestamp.parseSegmentTimestampToMilliseconds(timestamp);
-  for (const { start, end } of subtitleBlocks) {
-    const startMilliseconds =
-      AudioTimestamp.parseSegmentTimestampToMilliseconds(start);
-    const endMilliseconds =
-      AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
-    if (
-      timestampMilliseconds < startMilliseconds ||
-      timestampMilliseconds > endMilliseconds
-    ) {
+  for (const [blockIndex, { start, end }] of subtitleBlocks.entries()) {
+    const currentBlock = { start, end };
+    const fixedTimestampAtPreviousSubtitleEnd =
+      fixStartTimestampAtPreviousSubtitleEnd(
+        timestamp,
+        boundary,
+        currentBlock,
+        subtitleBlocks[blockIndex + 1],
+        index,
+        fixes,
+      );
+    if (fixedTimestampAtPreviousSubtitleEnd !== null) {
+      return fixedTimestampAtPreviousSubtitleEnd;
+    }
+
+    const fixedTimestampInsideSubtitleBlock = fixTimestampInsideSubtitleBlock(
+      timestamp,
+      boundary,
+      currentBlock,
+      index,
+      fixes,
+    );
+    if (fixedTimestampInsideSubtitleBlock !== null) {
+      return fixedTimestampInsideSubtitleBlock;
+    }
+
+    const nextBlock = subtitleBlocks[blockIndex + 1];
+    if (nextBlock === undefined) {
       continue;
     }
 
-    const fixedTimestamp = boundary === "start" ? start : end;
-    const fixedMilliseconds =
-      AudioTimestamp.parseSegmentTimestampToMilliseconds(fixedTimestamp);
-    const fixOffsetMilliseconds = Math.abs(
-      fixedMilliseconds - timestampMilliseconds,
-    );
-    if (fixOffsetMilliseconds > MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS) {
-      throw new Error(
-        `SC Boy subtitle response item at index ${index} has ${boundary} timestamp too far from the nearest fix boundary: ${timestamp} -> ${fixedTimestamp}`,
-      );
-    }
-    fixes.push({
-      index,
+    const fixedTimestampBetweenSubtitleBlocks = fixTimestampBetweenSubtitleBlocks(
+      timestamp,
       boundary,
-      originalTimestamp: timestamp,
-      fixedTimestamp,
-    });
-    return fixedTimestamp;
+      currentBlock,
+      nextBlock,
+      index,
+      fixes,
+    );
+    if (fixedTimestampBetweenSubtitleBlocks !== null) {
+      return fixedTimestampBetweenSubtitleBlocks;
+    }
   }
 
   throw new Error(
     `SC Boy subtitle response item at index ${index} has ${boundary} timestamp not found in subtitle blocks: ${timestamp}`,
   );
+}
+
+function fixStartTimestampAtPreviousSubtitleEnd(
+  timestamp: string,
+  boundary: "start" | "end",
+  currentBlock: { start: string; end: string },
+  nextBlock: { start: string; end: string } | undefined,
+  index: number,
+  fixes: SegmentFix[],
+): string | null {
+  if (
+    boundary !== "start" ||
+    nextBlock === undefined ||
+    timestamp !== currentBlock.end
+  ) {
+    return null;
+  }
+
+  recordSegmentFix(
+    "startTimestampAtPreviousSubtitleEnd",
+    timestamp,
+    nextBlock.start,
+    boundary,
+    index,
+    fixes,
+  );
+  return nextBlock.start;
+}
+
+function fixTimestampInsideSubtitleBlock(
+  timestamp: string,
+  boundary: "start" | "end",
+  currentBlock: { start: string; end: string },
+  index: number,
+  fixes: SegmentFix[],
+): string | null {
+  const timestampMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(timestamp);
+  const startMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.start);
+  const endMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.end);
+  if (
+    timestampMilliseconds <= startMilliseconds ||
+    timestampMilliseconds >= endMilliseconds
+  ) {
+    return null;
+  }
+
+  const fixedTimestamp =
+    boundary === "start" ? currentBlock.start : currentBlock.end;
+  recordSegmentFix(
+    "timestampInsideSubtitleBlock",
+    timestamp,
+    fixedTimestamp,
+    boundary,
+    index,
+    fixes,
+  );
+  return fixedTimestamp;
+}
+
+function fixTimestampBetweenSubtitleBlocks(
+  timestamp: string,
+  boundary: "start" | "end",
+  currentBlock: { start: string; end: string },
+  nextBlock: { start: string; end: string },
+  index: number,
+  fixes: SegmentFix[],
+): string | null {
+  const timestampMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(timestamp);
+  const endMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.end);
+  const nextStartMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(nextBlock.start);
+  if (
+    timestampMilliseconds <= endMilliseconds ||
+    timestampMilliseconds >= nextStartMilliseconds
+  ) {
+    return null;
+  }
+
+  const fixedTimestamp =
+    boundary === "start" ? nextBlock.start : currentBlock.end;
+  recordSegmentFix(
+    "timestampBetweenSubtitleBlocks",
+    timestamp,
+    fixedTimestamp,
+    boundary,
+    index,
+    fixes,
+  );
+  return fixedTimestamp;
+}
+
+function recordSegmentFix(
+  type: SegmentFix["type"],
+  originalTimestamp: string,
+  fixedTimestamp: string,
+  boundary: "start" | "end",
+  index: number,
+  fixes: SegmentFix[],
+): void {
+  const originalMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(originalTimestamp);
+  const fixedMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(fixedTimestamp);
+  const fixOffsetMilliseconds = Math.abs(
+    fixedMilliseconds - originalMilliseconds,
+  );
+  if (fixOffsetMilliseconds > MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS) {
+    throw new Error(
+      `SC Boy subtitle response item at index ${index} has ${boundary} timestamp too far from the nearest fix boundary: ${originalTimestamp} -> ${fixedTimestamp}`,
+    );
+  }
+  fixes.push({
+    type,
+    index,
+    boundary,
+    originalTimestamp,
+    fixedTimestamp,
+  });
 }
 
 async function saveExtractedSegments(

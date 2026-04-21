@@ -7,6 +7,10 @@ export type PartReportStatus = "running" | "ok" | "skipped" | "error";
 export type PartReportSkipReason = "short" | "missingSubtitle";
 
 export interface PartReportFix {
+  type:
+    | "timestampInsideSubtitleBlock"
+    | "timestampBetweenSubtitleBlocks"
+    | "startTimestampAtPreviousSubtitleEnd";
   index: number;
   boundary: "start" | "end";
   originalTimestamp: string;
@@ -17,9 +21,7 @@ interface PartReportBase {
   page: number;
   title: string;
   durationSeconds: number;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
+  processingTime: string;
 }
 
 export interface PartReportOk extends PartReportBase {
@@ -68,8 +70,7 @@ interface VideoReportBase {
   bvid: string;
   title: string;
   llmModel: string;
-  startedAt: string;
-  updatedAt: string;
+  processingTime: string;
   parts: PartReport[];
 }
 
@@ -79,12 +80,10 @@ export interface VideoReportRunning extends VideoReportBase {
 
 export interface VideoReportOk extends VideoReportBase {
   status: "ok";
-  completedAt: string;
 }
 
 export interface VideoReportError extends VideoReportBase {
   status: "error";
-  completedAt: string;
   paths?: VideoMergePaths;
   error: {
     name: string;
@@ -121,11 +120,11 @@ export async function writeVideoReport(
 export function summarizeProcessedPartResults(
   processedPartSettledResults: PromiseSettledResult<ProcessPartResult>[],
   parts: readonly BiliVideoPart[],
-  startedAt: string,
+  videoStartedMs: number,
   outputDir: string,
   bvid: string,
 ): ProcessedPartResultsSummary {
-  const completedAt = new Date().toISOString();
+  const processingTime = formatProcessingTime(performance.now() - videoStartedMs);
   const partReports = processedPartSettledResults.map((result, index) => {
     if (result.status === "fulfilled") {
       return result.value.report;
@@ -139,9 +138,7 @@ export function summarizeProcessedPartResults(
       page: parts[index].page,
       title: parts[index].tittle,
       durationSeconds: parts[index].duration,
-      startedAt,
-      updatedAt: completedAt,
-      completedAt,
+      processingTime,
       status: "error",
       error: {
         name: result.reason instanceof Error ? result.reason.name : "Error",
@@ -160,7 +157,7 @@ export function summarizeProcessedPartResults(
       ? undefined
       : {
           mergedAudioPath: resolve(outputDir, `${bvid}.merge.offtopic.m4a`),
-          shownotesPath: resolve(outputDir, `${bvid}.shownotes.json`),
+          shownotesPath: resolve(outputDir, `${bvid}.shownotes.txt`),
         };
 
   return {
@@ -171,4 +168,18 @@ export function summarizeProcessedPartResults(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     ),
   };
+}
+
+export function formatProcessingTime(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)}ms`;
+  }
+
+  if (durationMs < 60_000) {
+    return `${(durationMs / 1000).toFixed(1)}s`;
+  }
+
+  const minutes = Math.floor(durationMs / 60_000);
+  const seconds = (durationMs % 60_000) / 1000;
+  return `${minutes}m ${seconds.toFixed(1).padStart(4, "0")}s`;
 }

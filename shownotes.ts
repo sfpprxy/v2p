@@ -10,19 +10,14 @@ export interface OfftopicPart {
 
 export interface ProcessedPartOfftopic extends OfftopicPart {}
 
-export interface Shownote {
-  start: string;
-  summary: string;
-}
-
 export async function buildMergedOfftopicShownotes(
   parts: readonly OfftopicPart[],
-): Promise<Shownote[]> {
+): Promise<string[]> {
   return profileSpan(
     "buildMergedOfftopicShownotes",
     { partCount: parts.length },
     async (span) => {
-      const shownotes: Shownote[] = [];
+      const shownotes: string[] = [];
       let currentStartMilliseconds = 0;
 
       for (const part of parts) {
@@ -35,11 +30,13 @@ export async function buildMergedOfftopicShownotes(
           const startMilliseconds =
             currentStartMilliseconds +
             AudioTimestamp.parseSegmentTimestampToMilliseconds(segment.start);
+          const wholeSecondsMilliseconds =
+            Math.floor(startMilliseconds / 1000) * 1000;
+          const start = AudioTimestamp.formatSegmentTimestampFromMilliseconds(
+            wholeSecondsMilliseconds,
+          ).slice(0, 8);
 
-          shownotes.push({
-            start: formatShownoteStart(startMilliseconds),
-            summary: `P${part.page} ${segment.summary}`,
-          });
+          shownotes.push(`${start} P${part.page} ${segment.summary}`);
         }
 
         currentStartMilliseconds += Math.round(
@@ -51,11 +48,4 @@ export async function buildMergedOfftopicShownotes(
       return shownotes;
     },
   );
-}
-
-function formatShownoteStart(milliseconds: number): string {
-  const wholeSecondsMilliseconds = Math.floor(milliseconds / 1000) * 1000;
-  return AudioTimestamp.formatSegmentTimestampFromMilliseconds(
-    wholeSecondsMilliseconds,
-  ).slice(0, 8);
 }

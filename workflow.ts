@@ -18,6 +18,7 @@ import {
   type ProcessedPartOfftopic,
 } from "./shownotes";
 import {
+  formatProcessingTime,
   type ProcessPartResult,
   type VideoReport,
   writeVideoReport,
@@ -80,13 +81,12 @@ async function processVideo(
       const llmModel = DEFAULT_GEMINI_MODEL;
       span.set({ outputDir });
       mkdirSync(outputDir, { recursive: true });
-      const startedAt = new Date().toISOString();
+      const videoStartedMs = performance.now();
       await writeVideoReport(reportPath, {
         bvid: video.bvid,
         title: video.title,
         llmModel,
-        startedAt,
-        updatedAt: startedAt,
+        processingTime: formatProcessingTime(0),
         status: "running",
         parts: [],
       } satisfies VideoReport);
@@ -128,7 +128,7 @@ async function processVideo(
         summarizeProcessedPartResults(
           processedPartSettledResults,
           parts,
-          startedAt,
+          videoStartedMs,
           outputDir,
           video.bvid,
         );
@@ -137,14 +137,13 @@ async function processVideo(
       try {
         await mergeVideoOfftopicOutputs(video.bvid, processedParts, outputDir);
       } catch (error) {
-        const completedAt = new Date().toISOString();
         await writeVideoReport(reportPath, {
           bvid: video.bvid,
           title: video.title,
           llmModel,
-          startedAt,
-          updatedAt: completedAt,
-          completedAt,
+          processingTime: formatProcessingTime(
+            performance.now() - videoStartedMs,
+          ),
           status: "error",
           paths: mergePaths,
           parts: partReports,
@@ -156,7 +155,9 @@ async function processVideo(
         throw error;
       }
 
-      const completedAt = new Date().toISOString();
+      const processingTime = formatProcessingTime(
+        performance.now() - videoStartedMs,
+      );
       await writeVideoReport(
         reportPath,
         firstRejectedResult === undefined
@@ -164,9 +165,7 @@ async function processVideo(
               bvid: video.bvid,
               title: video.title,
               llmModel,
-              startedAt,
-              updatedAt: completedAt,
-              completedAt,
+              processingTime,
               status: "ok",
               parts: partReports,
             } satisfies VideoReport)
@@ -174,9 +173,7 @@ async function processVideo(
               bvid: video.bvid,
               title: video.title,
               llmModel,
-              startedAt,
-              updatedAt: completedAt,
-              completedAt,
+              processingTime,
               status: "error",
               paths: mergePaths,
               parts: partReports,
@@ -246,16 +243,14 @@ async function processPart(
     },
     async (span) => {
       // console.debug(part);
-      const startedAt = new Date().toISOString();
+      const partStartedMs = performance.now();
       const baseReport = {
         page: part.page,
         title: part.tittle,
         durationSeconds: part.duration,
-        startedAt,
       };
 
       if (part.duration < 10) {
-        const completedAt = new Date().toISOString();
         span.set({ skipped: true, skipReason: "short" });
         console.log(
           `[processPart:skip] short ${part.bvid} p${part.page} ${part.tittle} (${part.duration}s)`,
@@ -265,8 +260,9 @@ async function processPart(
           report: {
             ...baseReport,
             status: "skipped",
-            updatedAt: completedAt,
-            completedAt,
+            processingTime: formatProcessingTime(
+              performance.now() - partStartedMs,
+            ),
             skipReason: "short",
           },
         } satisfies ProcessPartResult;
@@ -306,7 +302,6 @@ async function processPart(
           audioPath,
         );
         span.set({ offtopicAudioPath: audioResult.outputPath });
-        const completedAt = new Date().toISOString();
         const processedPart = {
           page: part.page,
           offtopicAudioPath: audioResult.outputPath,
@@ -317,14 +312,14 @@ async function processPart(
           report: {
             ...baseReport,
             status: "ok",
-            updatedAt: completedAt,
-            completedAt,
+            processingTime: formatProcessingTime(
+              performance.now() - partStartedMs,
+            ),
             segmentCount: segments.length,
             segmentFixes: fixes,
           },
         } satisfies ProcessPartResult;
       } catch (error) {
-        const completedAt = new Date().toISOString();
         const message = error instanceof Error ? error.message : String(error);
         if (error instanceof MissingSubtitleError) {
           span.set({
@@ -344,8 +339,9 @@ async function processPart(
             report: {
               ...baseReport,
               status: "skipped",
-              updatedAt: completedAt,
-              completedAt,
+              processingTime: formatProcessingTime(
+                performance.now() - partStartedMs,
+              ),
               skipReason: "missingSubtitle",
               paths: {
                 subtitlePath: error.subtitlePath,
@@ -383,7 +379,7 @@ async function mergeVideoOfftopicOutputs(
         (left, right) => left.page - right.page,
       );
       const mergedAudioPath = resolve(outputDir, `${bvid}.merge.offtopic.m4a`);
-      const shownotesPath = resolve(outputDir, `${bvid}.shownotes.json`);
+      const shownotesPath = resolve(outputDir, `${bvid}.shownotes.txt`);
       span.set({ mergedAudioPath, shownotesPath });
 
       await concatAudioFiles(
@@ -393,11 +389,11 @@ async function mergeVideoOfftopicOutputs(
 
       const shownotes = await buildMergedOfftopicShownotes(sortedParts);
       span.set({ shownoteCount: shownotes.length });
-      await Bun.write(shownotesPath, `${JSON.stringify(shownotes, null, 2)}\n`);
+      await Bun.write(shownotesPath, `${shownotes.join("\n")}\n`);
     },
   );
 }
 
 if (import.meta.main) {
-  await processVideos("2026-02-11");
+  await processVideos("2026-02-12");
 }
