@@ -30,13 +30,9 @@ export async function buildMergedOfftopicShownotes(
           const startMilliseconds =
             currentStartMilliseconds +
             AudioTimestamp.parseSegmentTimestampToMilliseconds(segment.start);
-          const wholeSecondsMilliseconds =
-            Math.floor(startMilliseconds / 1000) * 1000;
-          const start = AudioTimestamp.formatSegmentTimestampFromMilliseconds(
-            wholeSecondsMilliseconds,
-          ).slice(0, 8);
+          const start = formatShownoteStart(startMilliseconds);
 
-          shownotes.push(`${start} P${part.page} ${segment.summary}`);
+          shownotes.push(`(${start}) P${part.page} ${segment.summary}`);
         }
 
         currentStartMilliseconds += Math.round(
@@ -48,4 +44,17 @@ export async function buildMergedOfftopicShownotes(
       return shownotes;
     },
   );
+}
+
+function formatShownoteStart(milliseconds: number): string {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours === 0) {
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }

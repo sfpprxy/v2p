@@ -10,6 +10,7 @@ export interface PartReportFix {
   type:
     | "timestampInsideSubtitleBlock"
     | "timestampBetweenSubtitleBlocks"
+    | "endTimestampAtNextSubtitleStart"
     | "startTimestampAtPreviousSubtitleEnd";
   index: number;
   boundary: "start" | "end";

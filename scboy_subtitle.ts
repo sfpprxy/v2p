@@ -14,6 +14,7 @@ export interface SegmentFix {
   type:
     | "timestampInsideSubtitleBlock"
     | "timestampBetweenSubtitleBlocks"
+    | "endTimestampAtNextSubtitleStart"
     | "startTimestampAtPreviousSubtitleEnd";
   index: number;
   boundary: "start" | "end";
@@ -409,6 +410,19 @@ function fixTimestampBetweenSubtitleBlocks(
     AudioTimestamp.parseSegmentTimestampToMilliseconds(currentBlock.end);
   const nextStartMilliseconds =
     AudioTimestamp.parseSegmentTimestampToMilliseconds(nextBlock.start);
+
+  if (boundary === "end" && timestampMilliseconds === nextStartMilliseconds) {
+    recordSegmentFix(
+      "endTimestampAtNextSubtitleStart",
+      timestamp,
+      currentBlock.end,
+      boundary,
+      index,
+      fixes,
+    );
+    return currentBlock.end;
+  }
+
   if (
     timestampMilliseconds <= endMilliseconds ||
     timestampMilliseconds >= nextStartMilliseconds
