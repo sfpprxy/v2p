@@ -10,16 +10,27 @@ export interface Segment {
   summary: string;
 }
 
+interface SubtitleBlock {
+  sequence: string;
+  start: string;
+  end: string;
+  raw: string;
+}
+
 export interface SegmentFix {
   type:
     | "timestampInsideSubtitleBlock"
     | "timestampBetweenSubtitleBlocks"
     | "endTimestampAtNextSubtitleStart"
-    | "startTimestampAtPreviousSubtitleEnd";
+    | "startTimestampAtPreviousSubtitleEnd"
+    | "emptySubtitleBlockTextFilled";
   index: number;
-  boundary: "start" | "end";
-  originalTimestamp: string;
-  fixedTimestamp: string;
+  boundary?: "start" | "end";
+  originalTimestamp?: string;
+  fixedTimestamp?: string;
+  sequence?: string;
+  originalText?: string;
+  fixedText?: string;
 }
 
 export interface ExtractSegmentsResult {
@@ -44,14 +55,28 @@ export async function extractSegments(
       let fixes: SegmentFix[] = [];
       const normalizedPartTitle = normalizePartTitle(partTitle);
       const segmentJsonPath = buildSegmentJsonPath(subtitlePath, ".segments");
+      const parsedSubtitlePath = parse(subtitlePath);
+      const rawResponsePath = format({
+        ...parsedSubtitlePath,
+        base: undefined,
+        name: `${parsedSubtitlePath.name}.segments.raw-response`,
+        ext: ".txt",
+      });
 
       if (shouldLog) {
         console.log(`[extractSegments:start] ${subtitlePath}`);
       }
 
       try {
-        const subtitleText = await Bun.file(subtitlePath).text();
-        span.set({ subtitleBytes: subtitleText.length });
+        const originalSubtitleText = await Bun.file(subtitlePath).text();
+        const {
+          subtitleText,
+          fixes: subtitleTextFixes,
+        } = fillEmptySubtitleBlocks(originalSubtitleText);
+        span.set({
+          subtitleBytes: subtitleText.length,
+          subtitleFixCount: subtitleTextFixes.length,
+        });
         const hasSavedSegments = await Bun.file(segmentJsonPath).exists();
         span.set({ cacheHit: hasSavedSegments, segmentJsonPath });
         if (hasSavedSegments) {
@@ -63,20 +88,24 @@ export async function extractSegments(
           ));
           validateScboySubtitleSegments(segments);
           validateScboySubtitleSegmentsAgainstSubtitle(segments, subtitleText);
-          span.set({ segmentCount: segments.length, fixCount: fixes.length });
+          span.set({
+            segmentCount: segments.length,
+            fixCount: subtitleTextFixes.length + fixes.length,
+          });
           if (fixes.length > 0) {
             await saveExtractedSegments(subtitlePath, segments);
           }
           if (shouldLog) {
             console.log(`[extractSegments:skip] exists ${segmentJsonPath}`);
           }
-          return { segments, fixes };
+          return { segments, fixes: [...subtitleTextFixes, ...fixes] };
         }
 
         const responseText = await gen(
           llmModel,
           buildScboySubtitlePrompt(normalizedPartTitle, subtitleText),
         );
+        await Bun.write(rawResponsePath, responseText);
         segments = parseScboySubtitleJson(responseText);
         ({ segments, fixes } = fixScboySubtitleSegmentsAgainstSubtitle(
           segments,
@@ -84,9 +113,12 @@ export async function extractSegments(
         ));
         validateScboySubtitleSegments(segments);
         validateScboySubtitleSegmentsAgainstSubtitle(segments, subtitleText);
-        span.set({ segmentCount: segments.length, fixCount: fixes.length });
+        span.set({
+          segmentCount: segments.length,
+          fixCount: subtitleTextFixes.length + fixes.length,
+        });
         await saveExtractedSegments(subtitlePath, segments);
-        return { segments, fixes };
+        return { segments, fixes: [...subtitleTextFixes, ...fixes] };
       } catch (error) {
         console.error("[extractSegments:error]", {
           subtitlePath,
@@ -192,8 +224,35 @@ function validateScboySubtitleSegments(value: Segments): void {
       previousEndMilliseconds !== null &&
       startMilliseconds < previousEndMilliseconds
     ) {
+      const windowStartIndex = Math.max(0, index - 4);
+      const windowEndIndex = Math.min(value.length, index + 5);
+      const segmentWindow = value
+        .slice(windowStartIndex, windowEndIndex)
+        .map((segment, segmentIndex) => {
+          const actualIndex = windowStartIndex + segmentIndex;
+          const label =
+            actualIndex === index
+              ? "current"
+              : actualIndex === index - 1
+                ? "previous"
+                : "context";
+          if (
+            typeof segment !== "object" ||
+            segment === null ||
+            Array.isArray(segment)
+          ) {
+            return `[${actualIndex}] ${label}: ${JSON.stringify(segment)}`;
+          }
+
+          return `[${actualIndex}] ${label}: ${JSON.stringify(segment)}`;
+        })
+        .join("\n");
       throw new Error(
-        `SC Boy subtitle response item at index ${index} overlaps or is out of order: ${start} starts before the previous segment ends`,
+        [
+          `SC Boy subtitle response item at index ${index} overlaps or is out of order: ${start} starts before the previous segment ends`,
+          "Nearby AI segments:",
+          segmentWindow,
+        ].join("\n"),
       );
     }
 
@@ -205,26 +264,26 @@ function fixScboySubtitleSegmentsAgainstSubtitle(
   segments: Segments,
   subtitleText: string,
 ): ExtractSegmentsResult {
-  const subtitleBlocks = readSubtitleTimestampBlocks(subtitleText);
+  const subtitleBlocks = readSubtitleBlocks(subtitleText);
   const fixes: SegmentFix[] = [];
 
   return {
-    segments: segments.map(({ start, end, summary }, index) => ({
+    segments: segments.map((segment, index) => ({
       start: fixScboySubtitleSegmentBoundary(
-        start,
+        segment,
         "start",
         subtitleBlocks,
         index,
         fixes,
       ),
       end: fixScboySubtitleSegmentBoundary(
-        end,
+        segment,
         "end",
         subtitleBlocks,
         index,
         fixes,
       ),
-      summary,
+      summary: segment.summary,
     })),
     fixes,
   };
@@ -234,7 +293,7 @@ function validateScboySubtitleSegmentsAgainstSubtitle(
   segments: Segments,
   subtitleText: string,
 ): void {
-  const subtitleBlocks = readSubtitleTimestampBlocks(subtitleText);
+  const subtitleBlocks = readSubtitleBlocks(subtitleText);
   const subtitleBoundaries = new Set<string>(
     subtitleBlocks.flatMap(({ start, end }) => [start, end]),
   );
@@ -253,33 +312,14 @@ function validateScboySubtitleSegmentsAgainstSubtitle(
   }
 }
 
-function readSubtitleTimestampBlocks(
-  subtitleText: string,
-): ReadonlyArray<{ start: string; end: string }> {
-  const subtitleBlockPattern =
-    /^(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})$/gm;
-  const subtitleBlocks: Array<{ start: string; end: string }> = [];
-
-  for (const match of subtitleText.matchAll(subtitleBlockPattern)) {
-    subtitleBlocks.push({ start: match[1], end: match[2] });
-  }
-
-  if (subtitleBlocks.length === 0) {
-    throw new Error(
-      "Subtitle text does not contain any valid timestamp blocks",
-    );
-  }
-
-  return subtitleBlocks;
-}
-
 function fixScboySubtitleSegmentBoundary(
-  timestamp: string,
+  segment: Segment,
   boundary: "start" | "end",
-  subtitleBlocks: ReadonlyArray<{ start: string; end: string }>,
+  subtitleBlocks: ReadonlyArray<SubtitleBlock>,
   index: number,
   fixes: SegmentFix[],
 ): string {
+  const timestamp = segment[boundary];
   const boundaryValues = new Set<string>(
     subtitleBlocks.map((block) => block[boundary]),
   );
@@ -287,14 +327,16 @@ function fixScboySubtitleSegmentBoundary(
     return timestamp;
   }
 
-  for (const [blockIndex, { start, end }] of subtitleBlocks.entries()) {
-    const currentBlock = { start, end };
+  for (const [blockIndex, currentBlock] of subtitleBlocks.entries()) {
     const fixedTimestampAtPreviousSubtitleEnd =
       fixStartTimestampAtPreviousSubtitleEnd(
         timestamp,
+        segment,
         boundary,
         currentBlock,
         subtitleBlocks[blockIndex + 1],
+        subtitleBlocks,
+        blockIndex,
         index,
         fixes,
       );
@@ -304,8 +346,11 @@ function fixScboySubtitleSegmentBoundary(
 
     const fixedTimestampInsideSubtitleBlock = fixTimestampInsideSubtitleBlock(
       timestamp,
+      segment,
       boundary,
       currentBlock,
+      blockIndex,
+      subtitleBlocks,
       index,
       fixes,
     );
@@ -321,9 +366,12 @@ function fixScboySubtitleSegmentBoundary(
     const fixedTimestampBetweenSubtitleBlocks =
       fixTimestampBetweenSubtitleBlocks(
         timestamp,
+        segment,
         boundary,
         currentBlock,
         nextBlock,
+        blockIndex,
+        subtitleBlocks,
         index,
         fixes,
       );
@@ -339,9 +387,12 @@ function fixScboySubtitleSegmentBoundary(
 
 function fixStartTimestampAtPreviousSubtitleEnd(
   timestamp: string,
+  segment: Segment,
   boundary: "start" | "end",
-  currentBlock: { start: string; end: string },
-  nextBlock: { start: string; end: string } | undefined,
+  currentBlock: SubtitleBlock,
+  nextBlock: SubtitleBlock | undefined,
+  subtitleBlocks: ReadonlyArray<SubtitleBlock>,
+  subtitleBlockIndex: number,
   index: number,
   fixes: SegmentFix[],
 ): string | null {
@@ -357,7 +408,10 @@ function fixStartTimestampAtPreviousSubtitleEnd(
     "startTimestampAtPreviousSubtitleEnd",
     timestamp,
     nextBlock.start,
+    segment,
     boundary,
+    subtitleBlockIndex + 1,
+    subtitleBlocks,
     index,
     fixes,
   );
@@ -366,8 +420,11 @@ function fixStartTimestampAtPreviousSubtitleEnd(
 
 function fixTimestampInsideSubtitleBlock(
   timestamp: string,
+  segment: Segment,
   boundary: "start" | "end",
-  currentBlock: { start: string; end: string },
+  currentBlock: SubtitleBlock,
+  subtitleBlockIndex: number,
+  subtitleBlocks: ReadonlyArray<SubtitleBlock>,
   index: number,
   fixes: SegmentFix[],
 ): string | null {
@@ -392,7 +449,10 @@ function fixTimestampInsideSubtitleBlock(
     "timestampInsideSubtitleBlock",
     timestamp,
     fixedTimestamp,
+    segment,
     boundary,
+    subtitleBlockIndex,
+    subtitleBlocks,
     index,
     fixes,
   );
@@ -401,9 +461,12 @@ function fixTimestampInsideSubtitleBlock(
 
 function fixTimestampBetweenSubtitleBlocks(
   timestamp: string,
+  segment: Segment,
   boundary: "start" | "end",
-  currentBlock: { start: string; end: string },
-  nextBlock: { start: string; end: string },
+  currentBlock: SubtitleBlock,
+  nextBlock: SubtitleBlock,
+  subtitleBlockIndex: number,
+  subtitleBlocks: ReadonlyArray<SubtitleBlock>,
   index: number,
   fixes: SegmentFix[],
 ): string | null {
@@ -420,7 +483,10 @@ function fixTimestampBetweenSubtitleBlocks(
       "endTimestampAtNextSubtitleStart",
       timestamp,
       currentBlock.end,
+      segment,
       boundary,
+      subtitleBlockIndex,
+      subtitleBlocks,
       index,
       fixes,
     );
@@ -440,18 +506,103 @@ function fixTimestampBetweenSubtitleBlocks(
     "timestampBetweenSubtitleBlocks",
     timestamp,
     fixedTimestamp,
+    segment,
     boundary,
+    boundary === "start" ? subtitleBlockIndex + 1 : subtitleBlockIndex,
+    subtitleBlocks,
     index,
     fixes,
   );
   return fixedTimestamp;
 }
 
+function fillEmptySubtitleBlocks(subtitleText: string): {
+  subtitleText: string;
+  fixes: SegmentFix[];
+} {
+  const normalizedSubtitleText = subtitleText.replace(/\r\n/g, "\n").trim();
+  const subtitleBlockTexts = normalizedSubtitleText.split(/\n{2,}/);
+  const fixes: SegmentFix[] = [];
+  const filledSubtitleText = subtitleBlockTexts
+    .map((rawBlock, index) => {
+      const lines = rawBlock.split("\n");
+      if (lines.length < 2) {
+        throw new Error(`Invalid subtitle block: ${rawBlock}`);
+      }
+
+      const timestampMatch = lines[1]?.match(
+        /^(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})$/,
+      );
+      if (!timestampMatch) {
+        throw new Error(`Invalid subtitle timestamp line: ${rawBlock}`);
+      }
+
+      if (lines.length >= 3 && lines.slice(2).some((line) => line !== "")) {
+        return rawBlock;
+      }
+
+      fixes.push({
+        type: "emptySubtitleBlockTextFilled",
+        index,
+        sequence: lines[0]!,
+        originalText: "",
+        fixedText: "(此处字幕缺失)",
+      });
+      return `${rawBlock}\n(此处字幕缺失)`;
+    })
+    .join("\n\n");
+
+  if (subtitleBlockTexts.length === 0) {
+    throw new Error("Subtitle text does not contain any valid timestamp blocks");
+  }
+
+  return {
+    subtitleText: filledSubtitleText,
+    fixes,
+  };
+}
+
+function readSubtitleBlocks(subtitleText: string): ReadonlyArray<SubtitleBlock> {
+  const normalizedSubtitleText = subtitleText.replace(/\r\n/g, "\n").trim();
+  const subtitleBlockTexts = normalizedSubtitleText.split(/\n{2,}/);
+  const subtitleBlocks = subtitleBlockTexts.map((rawBlock) => {
+    const lines = rawBlock.split("\n");
+    if (lines.length < 3) {
+      throw new Error(`Invalid subtitle block: ${rawBlock}`);
+    }
+
+    const timestampMatch = lines[1]?.match(
+      /^(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})$/,
+    );
+    if (!timestampMatch) {
+      throw new Error(`Invalid subtitle timestamp line: ${rawBlock}`);
+    }
+
+    return {
+      sequence: lines[0]!,
+      start: timestampMatch[1],
+      end: timestampMatch[2],
+      raw: rawBlock,
+    };
+  });
+
+  if (subtitleBlocks.length === 0) {
+    throw new Error(
+      "Subtitle text does not contain any valid timestamp blocks",
+    );
+  }
+
+  return subtitleBlocks;
+}
+
 function recordSegmentFix(
   type: SegmentFix["type"],
   originalTimestamp: string,
   fixedTimestamp: string,
+  segment: Segment,
   boundary: "start" | "end",
+  subtitleBlockIndex: number,
+  subtitleBlocks: ReadonlyArray<SubtitleBlock>,
   index: number,
   fixes: SegmentFix[],
 ): void {
@@ -463,8 +614,23 @@ function recordSegmentFix(
     fixedMilliseconds - originalMilliseconds,
   );
   if (fixOffsetMilliseconds > MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS) {
+    const subtitleContext = subtitleBlocks
+      .slice(
+        Math.max(0, subtitleBlockIndex - 2),
+        Math.min(subtitleBlocks.length, subtitleBlockIndex + 3),
+      )
+      .map((block) => block.raw)
+      .join("\n\n");
     throw new Error(
-      `SC Boy subtitle response item at index ${index} has ${boundary} timestamp too far from the nearest fix boundary: ${originalTimestamp} -> ${fixedTimestamp}`,
+      [
+        `SC Boy subtitle response item at index ${index} has ${boundary} timestamp too far from the nearest fix boundary: ${originalTimestamp} -> ${fixedTimestamp}`,
+        "AI segment:",
+        `start: ${segment.start}`,
+        `end: ${segment.end}`,
+        `summary: ${segment.summary}`,
+        "Original subtitle context:",
+        subtitleContext,
+      ].join("\n"),
     );
   }
   fixes.push({

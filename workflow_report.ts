@@ -11,11 +11,15 @@ export interface PartReportFix {
     | "timestampInsideSubtitleBlock"
     | "timestampBetweenSubtitleBlocks"
     | "endTimestampAtNextSubtitleStart"
-    | "startTimestampAtPreviousSubtitleEnd";
+    | "startTimestampAtPreviousSubtitleEnd"
+    | "emptySubtitleBlockTextFilled";
   index: number;
-  boundary: "start" | "end";
-  originalTimestamp: string;
-  fixedTimestamp: string;
+  boundary?: "start" | "end";
+  originalTimestamp?: string;
+  fixedTimestamp?: string;
+  sequence?: string;
+  originalText?: string;
+  fixedText?: string;
 }
 
 interface PartReportBase {
