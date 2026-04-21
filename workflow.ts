@@ -1,6 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+import chalk from "chalk";
+import { Presets, SingleBar } from "cli-progress";
 import { concatAudioFiles, sliceAndConcatAudio } from "./audio";
 import { downloadAudio } from "./bili_audio";
 import { downloadSubtitle, MissingSubtitleError } from "./bili_subtitle";
@@ -24,7 +26,7 @@ import {
   writeVideoReport,
   summarizeProcessedPartResults,
 } from "./workflow_report";
-import { DEFAULT_GEMINI_MODEL } from "./llm";
+import { DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL } from "./llm";
 import { Client } from "@renmu/bili-api";
 
 const PROJECT_ROOT = import.meta.dir;
@@ -36,12 +38,19 @@ interface VideoOutputContext {
   reportPath: string;
 }
 
+interface VideoWithParts {
+  video: BiliVideo;
+  parts: readonly BiliVideoPart[];
+}
+
 async function processVideos(
+  llmModel: string,
   dateInTitle?: string | [string, string] | string[] | null,
 ): Promise<void> {
   await profileSpan(
     "processVideos",
     {
+      llmModel,
       dateInTitle: Array.isArray(dateInTitle)
         ? dateInTitle.join(" ")
         : (dateInTitle ?? null),
@@ -58,8 +67,52 @@ async function processVideos(
       try {
         const videos = store.listVideos(dateInTitle);
         span.set({ videoCount: videos.length });
+
+        const videosWithParts: VideoWithParts[] = [];
         for (const video of videos) {
-          await processVideo(video, client);
+          const parts = await profileSpan(
+            "video.getParts",
+            { bvid: video.bvid },
+            async (partsSpan) => {
+              const videoParts = await video.getParts(client);
+              partsSpan.set({ partCount: videoParts.length });
+              return videoParts;
+            },
+          );
+          videosWithParts.push({ video, parts });
+        }
+
+        const totalPartCount = videosWithParts.reduce(
+          (sum, { parts }) => sum + parts.length,
+          0,
+        );
+        span.set({ partCount: totalPartCount });
+
+        const progressBar = new SingleBar(
+          {
+            format: [
+              chalk.dim("parts"),
+              chalk.cyan("{bar}"),
+              chalk.bold("{value}/{total}"),
+              chalk.dim("{percentage}%"),
+              chalk.dim("{title}"),
+            ].join(" "),
+            barCompleteChar: "█",
+            barIncompleteChar: "░",
+            barsize: 26,
+            hideCursor: true,
+            emptyOnZero: true,
+          },
+          Presets.shades_classic,
+        );
+
+        progressBar.start(totalPartCount, 0, { title: "" });
+        try {
+          for (const { video, parts } of videosWithParts) {
+            await processVideo(video, parts, client, llmModel, progressBar);
+          }
+        } finally {
+          progressBar.stop();
         }
       } finally {
         store.close();
@@ -70,15 +123,17 @@ async function processVideos(
 
 async function processVideo(
   video: BiliVideo,
+  parts: readonly BiliVideoPart[],
   client: ReturnType<typeof buildBiliClient>,
+  llmModel: string,
+  progressBar: SingleBar,
 ): Promise<void> {
   await profileSpan(
     "processVideo",
-    { bvid: video.bvid, title: video.title },
+    { bvid: video.bvid, title: video.title, llmModel },
     async (span) => {
-      console.log(video.title);
+      progressBar.update({ title: video.title });
       const { outputDir, reportPath } = buildVideoOutputContext(video);
-      const llmModel = DEFAULT_GEMINI_MODEL;
       span.set({ outputDir });
       mkdirSync(outputDir, { recursive: true });
       const videoStartedMs = performance.now();
@@ -91,15 +146,6 @@ async function processVideo(
         parts: [],
       } satisfies VideoReport);
 
-      const parts = await profileSpan(
-        "video.getParts",
-        { bvid: video.bvid },
-        async (partsSpan) => {
-          const videoParts = await video.getParts(client);
-          partsSpan.set({ partCount: videoParts.length });
-          return videoParts;
-        },
-      );
       span.set({ partCount: parts.length });
 
       const processablePartPages = parts
@@ -121,7 +167,8 @@ async function processVideo(
             outputDir,
             runAudioDownloadOrdered,
             runLlmOrdered,
-          ),
+            llmModel,
+          ).finally(() => progressBar.increment()),
         ),
       );
       const { partReports, processedParts, mergePaths, firstRejectedResult } =
@@ -232,6 +279,7 @@ async function processPart(
   outputDir: string,
   runAudioDownloadOrdered: OrderedTaskRunner<number>,
   runLlmOrdered: OrderedTaskRunner<number>,
+  llmModel: string,
 ): Promise<ProcessPartResult> {
   return profileSpan(
     "processPart",
@@ -240,6 +288,7 @@ async function processPart(
       page: part.page,
       title: part.tittle,
       durationSeconds: part.duration,
+      llmModel,
     },
     async (span) => {
       // console.debug(part);
@@ -291,7 +340,7 @@ async function processPart(
             downloadAudio(part, client, outputDir),
           ),
           runLlmOrdered(part.page, () =>
-            extractSegments(subtitlePath, part.tittle),
+            extractSegments(subtitlePath, part.tittle, llmModel),
           ),
         ]);
         const { segments, fixes } = extractResult;
@@ -395,5 +444,18 @@ async function mergeVideoOfftopicOutputs(
 }
 
 if (import.meta.main) {
-  await processVideos("2026-02-09 2026-02-11");
+  const modelArg = process.argv[2] ?? "gemini";
+  let llmModel: string;
+  switch (modelArg) {
+    case "gemini":
+      llmModel = DEFAULT_GEMINI_MODEL;
+      break;
+    case "codex":
+      llmModel = DEFAULT_CODEX_MODEL;
+      break;
+    default:
+      throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
+  }
+
+  await processVideos(llmModel, "2026-02-14");
 }
