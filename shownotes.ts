@@ -8,6 +8,8 @@ export interface OfftopicPart {
   relativeSegmentsPath: string;
 }
 
+export interface ProcessedPartOfftopic extends OfftopicPart {}
+
 export interface Shownote {
   start: string;
   summary: string;

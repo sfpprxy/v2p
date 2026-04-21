@@ -1,19 +1,11 @@
 import { readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-
-interface ProfileEvent {
-  name: string;
-  durationMs: number;
-  runId?: string;
-  status?: string;
-  startTime?: string;
-  endTime?: string;
-  cacheHit?: boolean;
-  bvid?: string;
-  page?: number;
-  title?: string;
-  [key: string]: unknown;
-}
+import type {
+  ProfileEvent,
+  ProfileEventError,
+  ProfileEventOk,
+  ProfileFieldValue,
+} from "./perf";
 
 interface SpanSummary {
   name: string;
@@ -37,7 +29,7 @@ async function main(): Promise<void> {
 
   const summaries = summarizeEvents(events);
   const runIds = Array.from(
-    new Set(events.map((event) => event.runId).filter((runId) => runId)),
+    new Set(events.map((event) => event.runId)),
   );
   const wallTimeMs = computeWallTimeMs(events);
 
@@ -95,11 +87,65 @@ async function loadProfileEvents(profilePath: string): Promise<ProfileEvent[]> {
     if (typeof parsed.name !== "string") {
       throw new Error(`Profile line ${index + 1} is missing name`);
     }
+    if (parsed.status !== "ok" && parsed.status !== "error") {
+      throw new Error(`Profile line ${index + 1} has invalid status`);
+    }
     if (typeof parsed.durationMs !== "number") {
       throw new Error(`Profile line ${index + 1} is missing durationMs`);
     }
+    if (typeof parsed.runId !== "string") {
+      throw new Error(`Profile line ${index + 1} is missing runId`);
+    }
+    if (typeof parsed.startTime !== "string") {
+      throw new Error(`Profile line ${index + 1} is missing startTime`);
+    }
+    if (typeof parsed.endTime !== "string") {
+      throw new Error(`Profile line ${index + 1} is missing endTime`);
+    }
+    if (
+      typeof parsed.fields !== "object" ||
+      parsed.fields === null ||
+      Array.isArray(parsed.fields)
+    ) {
+      throw new Error(`Profile line ${index + 1} is missing fields`);
+    }
+    for (const value of Object.values(parsed.fields)) {
+      if (
+        value !== null &&
+        typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean"
+      ) {
+        throw new Error(
+          `Profile line ${index + 1} has a field value with unsupported type`,
+        );
+      }
+    }
 
-    events.push(parsed as ProfileEvent);
+    const eventBase = {
+      runId: parsed.runId,
+      name: parsed.name,
+      startTime: parsed.startTime,
+      endTime: parsed.endTime,
+      durationMs: parsed.durationMs,
+      fields: parsed.fields as Record<string, ProfileFieldValue>,
+    };
+
+    if (parsed.status === "ok") {
+      events.push({
+        ...eventBase,
+        status: "ok",
+      } satisfies ProfileEventOk);
+      continue;
+    }
+    if (typeof parsed.error !== "string") {
+      throw new Error(`Profile line ${index + 1} is missing error`);
+    }
+    events.push({
+      ...eventBase,
+      status: "error",
+      error: parsed.error,
+    } satisfies ProfileEventError);
   }
   return events;
 }
@@ -129,9 +175,9 @@ function summarizeEvents(events: readonly ProfileEvent[]): SpanSummary[] {
     if (event.status === "error") {
       summary.errors += 1;
     }
-    if (event.cacheHit === true) {
+    if (event.fields.cacheHit === true) {
       summary.cacheHits += 1;
-    } else if (event.cacheHit === false) {
+    } else if (event.fields.cacheHit === false) {
       summary.cacheMisses += 1;
     }
   }
@@ -209,7 +255,7 @@ function printSlowestEvents(events: readonly ProfileEvent[]): void {
     .map((event) => [
       event.name,
       formatDuration(event.durationMs),
-      String(event.status ?? ""),
+      event.status,
       describeEvent(event),
     ]);
 
@@ -277,7 +323,7 @@ function describeEvent(event: ProfileEvent): string {
   ];
   return fields
     .flatMap((field) => {
-      const value = event[field];
+      const value = event.fields[field];
       if (
         value === undefined ||
         value === null ||
@@ -290,7 +336,7 @@ function describeEvent(event: ProfileEvent): string {
     .join(" ");
 }
 
-function formatFieldValue(value: unknown): string {
+function formatFieldValue(value: ProfileFieldValue): string {
   const text = String(value).replace(/\s+/gu, " ").trim();
   return text.length > 80 ? `${text.slice(0, 77)}...` : text;
 }

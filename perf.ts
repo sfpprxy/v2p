@@ -3,10 +3,33 @@ import { dirname, resolve } from "node:path";
 
 export type ProfileFieldValue = string | number | boolean | null;
 export type ProfileFields = Record<string, ProfileFieldValue | undefined>;
+export type ProfileFieldMap = Record<string, ProfileFieldValue>;
+export type ProfileEventStatus = "ok" | "error";
 
 export interface ProfileSpan {
   set(fields: ProfileFields): void;
 }
+
+interface ProfileEventBase {
+  runId: string;
+  name: string;
+  status: ProfileEventStatus;
+  startTime: string;
+  endTime: string;
+  durationMs: number;
+  fields: ProfileFieldMap;
+}
+
+export interface ProfileEventOk extends ProfileEventBase {
+  status: "ok";
+}
+
+export interface ProfileEventError extends ProfileEventBase {
+  status: "error";
+  error: string;
+}
+
+export type ProfileEvent = ProfileEventOk | ProfileEventError;
 
 const PROFILE_ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 const PROFILE_RUN_ID =
@@ -66,21 +89,31 @@ const disabledProfileSpan: ProfileSpan = {
 
 async function writeProfileEvent(
   name: string,
-  status: "ok" | "error",
+  status: ProfileEventStatus,
   startTime: Date,
   startMs: number,
   fields: ProfileFields,
 ): Promise<void> {
   const endTime = new Date();
-  const event = {
+  const baseEvent = {
     runId: PROFILE_RUN_ID,
     name,
-    status,
     startTime: startTime.toISOString(),
     endTime: endTime.toISOString(),
     durationMs: Number((performance.now() - startMs).toFixed(3)),
-    ...cleanProfileFields(fields),
+    fields: cleanProfileFields(fields),
   };
+  const event =
+    status === "ok"
+      ? ({
+          ...baseEvent,
+          status: "ok",
+        } satisfies ProfileEventOk)
+      : ({
+          ...baseEvent,
+          status: "error",
+          error: String(fields.error),
+        } satisfies ProfileEventError);
   const line = `${JSON.stringify(event)}\n`;
 
   profileWriteQueue = profileWriteQueue
@@ -98,8 +131,8 @@ async function writeProfileEvent(
   await profileWriteQueue;
 }
 
-function cleanProfileFields(fields: ProfileFields): Record<string, ProfileFieldValue> {
-  const cleanedFields: Record<string, ProfileFieldValue> = {};
+function cleanProfileFields(fields: ProfileFields): ProfileFieldMap {
+  const cleanedFields: ProfileFieldMap = {};
   for (const [key, value] of Object.entries(fields)) {
     if (value !== undefined) {
       cleanedFields[key] = value;

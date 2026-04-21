@@ -10,19 +10,33 @@ export interface Segment {
   summary: string;
 }
 
+export interface SegmentFix {
+  index: number;
+  boundary: "start" | "end";
+  originalTimestamp: string;
+  fixedTimestamp: string;
+}
+
+export interface ExtractSegmentsResult {
+  segments: Segments;
+  fixes: SegmentFix[];
+}
+
 export type Segments = Segment[];
+const MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS = 5_000;
 
 export async function extractSegments(
   subtitlePath: string,
   partTitle: string,
   llmModel: string = DEFAULT_CODEX_MODEL,
   shouldLog = true,
-): Promise<Segments> {
+): Promise<ExtractSegmentsResult> {
   return profileSpan(
     "extractSegments",
     { subtitlePath, partTitle, llmModel },
     async (span) => {
       let segments: Segments | null = null;
+      let fixes: SegmentFix[] = [];
       const normalizedPartTitle = normalizePartTitle(partTitle);
       const segmentJsonPath = buildSegmentJsonPath(subtitlePath, ".segments");
 
@@ -31,28 +45,43 @@ export async function extractSegments(
       }
 
       try {
+        const subtitleText = await Bun.file(subtitlePath).text();
+        span.set({ subtitleBytes: subtitleText.length });
         const hasSavedSegments = await Bun.file(segmentJsonPath).exists();
         span.set({ cacheHit: hasSavedSegments, segmentJsonPath });
         if (hasSavedSegments) {
           const existingSegmentsText = await Bun.file(segmentJsonPath).text();
           segments = parseScboySubtitleJson(existingSegmentsText);
-          span.set({ segmentCount: segments.length });
+          ({ segments, fixes } = fixScboySubtitleSegmentsAgainstSubtitle(
+            segments,
+            subtitleText,
+          ));
+          validateScboySubtitleSegments(segments);
+          validateScboySubtitleSegmentsAgainstSubtitle(segments, subtitleText);
+          span.set({ segmentCount: segments.length, fixCount: fixes.length });
+          if (fixes.length > 0) {
+            await saveExtractedSegments(subtitlePath, segments);
+          }
           if (shouldLog) {
             console.log(`[extractSegments:skip] exists ${segmentJsonPath}`);
           }
-          return segments;
+          return { segments, fixes };
         }
 
-        const subtitleText = await Bun.file(subtitlePath).text();
-        span.set({ subtitleBytes: subtitleText.length });
         const responseText = await gen(
           llmModel,
           buildScboySubtitlePrompt(normalizedPartTitle, subtitleText),
         );
         segments = parseScboySubtitleJson(responseText);
-        span.set({ segmentCount: segments.length });
+        ({ segments, fixes } = fixScboySubtitleSegmentsAgainstSubtitle(
+          segments,
+          subtitleText,
+        ));
+        validateScboySubtitleSegments(segments);
+        validateScboySubtitleSegmentsAgainstSubtitle(segments, subtitleText);
+        span.set({ segmentCount: segments.length, fixCount: fixes.length });
         await saveExtractedSegments(subtitlePath, segments);
-        return segments;
+        return { segments, fixes };
       } catch (error) {
         console.error("[extractSegments:error]", {
           subtitlePath,
@@ -74,9 +103,7 @@ export async function extractSegments(
 
 export function parseScboySubtitleJson(responseText: string): Segments {
   const normalizedJson = normalizeJsonText(responseText);
-  const parsed: Segments = JSON.parse(normalizedJson) as Segments;
-  assertScboySubtitleJson(parsed);
-  return parsed;
+  return JSON.parse(normalizedJson) as Segments;
 }
 
 export function normalizeJsonText(responseText: string): string {
@@ -119,14 +146,18 @@ function buildScboySubtitlePrompt(
 ${subtitleText}`;
 }
 
-function assertScboySubtitleJson(value: Segments): void {
+function validateScboySubtitleSegments(value: Segments): void {
   if (!Array.isArray(value)) {
     throw new Error("SC Boy subtitle response is not a JSON array");
   }
 
-  for (const item of value) {
+  let previousEndMilliseconds: number | null = null;
+
+  for (const [index, item] of value.entries()) {
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
-      throw new Error("SC Boy subtitle response contains a non-object item");
+      throw new Error(
+        `SC Boy subtitle response contains a non-object item at index ${index}`,
+      );
     }
 
     const { start, end, summary } = item;
@@ -136,13 +167,154 @@ function assertScboySubtitleJson(value: Segments): void {
       typeof summary !== "string"
     ) {
       throw new Error(
-        "SC Boy subtitle response item must contain string start, end, and summary fields",
+        `SC Boy subtitle response item at index ${index} must contain string start, end, and summary fields`,
       );
     }
 
     AudioTimestamp.assertSegmentTimestamp(start, "start");
     AudioTimestamp.assertSegmentTimestamp(end, "end");
+
+    const startMilliseconds =
+      AudioTimestamp.parseSegmentTimestampToMilliseconds(start);
+    const endMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
+    if (endMilliseconds <= startMilliseconds) {
+      throw new Error(
+        `SC Boy subtitle response item at index ${index} has invalid range: ${start} -> ${end}`,
+      );
+    }
+    if (
+      previousEndMilliseconds !== null &&
+      startMilliseconds < previousEndMilliseconds
+    ) {
+      throw new Error(
+        `SC Boy subtitle response item at index ${index} overlaps or is out of order: ${start} starts before the previous segment ends`,
+      );
+    }
+
+    previousEndMilliseconds = endMilliseconds;
   }
+}
+
+function fixScboySubtitleSegmentsAgainstSubtitle(
+  segments: Segments,
+  subtitleText: string,
+): ExtractSegmentsResult {
+  const subtitleBlocks = readSubtitleTimestampBlocks(subtitleText);
+  const fixes: SegmentFix[] = [];
+
+  return {
+    segments: segments.map(({ start, end, summary }, index) => ({
+      start: fixScboySubtitleSegmentBoundary(
+        start,
+        "start",
+        subtitleBlocks,
+        index,
+        fixes,
+      ),
+      end: fixScboySubtitleSegmentBoundary(
+        end,
+        "end",
+        subtitleBlocks,
+        index,
+        fixes,
+      ),
+      summary,
+    })),
+    fixes,
+  };
+}
+
+function validateScboySubtitleSegmentsAgainstSubtitle(
+  segments: Segments,
+  subtitleText: string,
+): void {
+  const subtitleBlocks = readSubtitleTimestampBlocks(subtitleText);
+  const subtitleBoundaries = new Set<string>(
+    subtitleBlocks.flatMap(({ start, end }) => [start, end]),
+  );
+
+  for (const [index, { start, end }] of segments.entries()) {
+    if (!subtitleBoundaries.has(start)) {
+      throw new Error(
+        `SC Boy subtitle response item at index ${index} has start timestamp not found in subtitle block boundaries: ${start}`,
+      );
+    }
+    if (!subtitleBoundaries.has(end)) {
+      throw new Error(
+        `SC Boy subtitle response item at index ${index} has end timestamp not found in subtitle block boundaries: ${end}`,
+      );
+    }
+  }
+}
+
+function readSubtitleTimestampBlocks(
+  subtitleText: string,
+): ReadonlyArray<{ start: string; end: string }> {
+  const subtitleBlockPattern =
+    /^(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})$/gm;
+  const subtitleBlocks: Array<{ start: string; end: string }> = [];
+
+  for (const match of subtitleText.matchAll(subtitleBlockPattern)) {
+    subtitleBlocks.push({ start: match[1], end: match[2] });
+  }
+
+  if (subtitleBlocks.length === 0) {
+    throw new Error("Subtitle text does not contain any valid timestamp blocks");
+  }
+
+  return subtitleBlocks;
+}
+
+function fixScboySubtitleSegmentBoundary(
+  timestamp: string,
+  boundary: "start" | "end",
+  subtitleBlocks: ReadonlyArray<{ start: string; end: string }>,
+  index: number,
+  fixes: SegmentFix[],
+): string {
+  const boundaryValues = new Set<string>(
+    subtitleBlocks.map((block) => block[boundary]),
+  );
+  if (boundaryValues.has(timestamp)) {
+    return timestamp;
+  }
+
+  const timestampMilliseconds =
+    AudioTimestamp.parseSegmentTimestampToMilliseconds(timestamp);
+  for (const { start, end } of subtitleBlocks) {
+    const startMilliseconds =
+      AudioTimestamp.parseSegmentTimestampToMilliseconds(start);
+    const endMilliseconds = AudioTimestamp.parseSegmentTimestampToMilliseconds(end);
+    if (
+      timestampMilliseconds < startMilliseconds ||
+      timestampMilliseconds > endMilliseconds
+    ) {
+      continue;
+    }
+
+    const fixedTimestamp = boundary === "start" ? end : start;
+    const fixedMilliseconds =
+      AudioTimestamp.parseSegmentTimestampToMilliseconds(fixedTimestamp);
+    const fixOffsetMilliseconds = Math.abs(
+      fixedMilliseconds - timestampMilliseconds,
+    );
+    if (fixOffsetMilliseconds > MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS) {
+      throw new Error(
+        `SC Boy subtitle response item at index ${index} has ${boundary} timestamp too far from the nearest fix boundary: ${timestamp} -> ${fixedTimestamp}`,
+      );
+    }
+    fixes.push({
+      index,
+      boundary,
+      originalTimestamp: timestamp,
+      fixedTimestamp,
+    });
+    return fixedTimestamp;
+  }
+
+  throw new Error(
+    `SC Boy subtitle response item at index ${index} has ${boundary} timestamp not found in subtitle blocks: ${timestamp}`,
+  );
 }
 
 async function saveExtractedSegments(
