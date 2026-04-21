@@ -27,11 +27,12 @@ import {
   type ProcessedPartOfftopic,
 } from "./shownotes";
 import {
+  buildWorkflowReportError,
   formatProcessingTime,
   type ProcessPartResult,
   type VideoReport,
-  writeVideoReport,
   summarizeProcessedPartResults,
+  writeVideoReport,
 } from "./workflow_report";
 import { DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL } from "./llm";
 import { Client } from "@renmu/bili-api";
@@ -211,16 +212,10 @@ async function processVideo(
                   performance.now() - videoStartedMs,
                 ),
                 status: "error",
-                error: {
-                  name: error instanceof Error ? error.name : "Error",
-                  message,
-                },
+                error: buildWorkflowReportError(error),
               },
             ],
-            error: {
-              name: error instanceof Error ? error.name : "Error",
-              message,
-            },
+            error: buildWorkflowReportError(error),
           } satisfies VideoReport);
           throw error;
         } finally {
@@ -257,10 +252,7 @@ async function processVideo(
           status: "error",
           paths: mergePaths,
           parts: partReports,
-          error: {
-            name: error instanceof Error ? error.name : "Error",
-            message: error instanceof Error ? error.message : String(error),
-          },
+          error: buildWorkflowReportError(error),
         } satisfies VideoReport);
         throw error;
       }
@@ -431,10 +423,7 @@ async function processPart(
               paths: {
                 subtitlePath: error.subtitlePath,
               },
-              error: {
-                name: error.name,
-                message,
-              },
+              error: buildWorkflowReportError(error),
             },
           } satisfies ProcessPartResult;
         }

@@ -46,18 +46,12 @@ export interface PartReportSkippedMissingSubtitle extends PartReportBase {
   paths: {
     subtitlePath: string;
   };
-  error: {
-    name: string;
-    message: string;
-  };
+  error: WorkflowReportError;
 }
 
 export interface PartReportError extends PartReportBase {
   status: "error";
-  error: {
-    name: string;
-    message: string;
-  };
+  error: WorkflowReportError;
 }
 
 export type PartReport =
@@ -90,13 +84,16 @@ export interface VideoReportOk extends VideoReportBase {
 export interface VideoReportError extends VideoReportBase {
   status: "error";
   paths?: VideoMergePaths;
-  error: {
-    name: string;
-    message: string;
-  };
+  error: WorkflowReportError;
 }
 
 export type VideoReport = VideoReportRunning | VideoReportOk | VideoReportError;
+
+export interface WorkflowReportError {
+  name: string;
+  message: string;
+  details?: string[];
+}
 
 export type ProcessPartResult =
   | {
@@ -113,6 +110,17 @@ export interface ProcessedPartResultsSummary {
   processedParts: ProcessedPartOfftopic[];
   mergePaths: VideoMergePaths | undefined;
   firstRejectedResult: PromiseRejectedResult | undefined;
+}
+
+export function buildWorkflowReportError(error: unknown): WorkflowReportError {
+  const name = error instanceof Error ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error);
+  const details = message
+    .split("\n")
+    .slice(1)
+    .filter((line) => line !== "");
+
+  return details.length === 0 ? { name, message } : { name, message, details };
 }
 
 export async function writeVideoReport(
@@ -135,20 +143,13 @@ export function summarizeProcessedPartResults(
       return result.value.report;
     }
 
-    const message =
-      result.reason instanceof Error
-        ? result.reason.message
-        : String(result.reason);
     return {
       page: parts[index].page,
       title: parts[index].tittle,
       durationSeconds: parts[index].duration,
       processingTime,
       status: "error",
-      error: {
-        name: result.reason instanceof Error ? result.reason.name : "Error",
-        message,
-      },
+      error: buildWorkflowReportError(result.reason),
     } satisfies PartReport;
   });
   const processedParts = processedPartSettledResults
