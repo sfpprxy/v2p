@@ -475,7 +475,25 @@ async function mergeVideoOfftopicOutputs(
 }
 
 if (import.meta.main) {
-  const modelArg = process.argv[2] ?? "gemini";
+  const modelArgs: string[] = [];
+  const dateArgs: string[] = [];
+  for (const arg of process.argv.slice(2)) {
+    if (arg === "gemini" || arg === "codex") {
+      modelArgs.push(arg);
+    } else if (/^\d{4}-\d{2}-\d{2}$/u.test(arg)) {
+      dateArgs.push(arg);
+    } else {
+      throw new Error(`Unsupported workflow argument: ${arg}`);
+    }
+  }
+  if (modelArgs.length > 1) {
+    throw new Error(`Expected at most one LLM backend, got ${modelArgs.length}`);
+  }
+  if (dateArgs.length > 2) {
+    throw new Error(`Expected at most two date arguments, got ${dateArgs.length}`);
+  }
+
+  const modelArg = modelArgs[0] ?? "gemini";
   let llmModel: string;
   switch (modelArg) {
     case "gemini":
@@ -488,7 +506,10 @@ if (import.meta.main) {
       throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
   }
 
-  const podcastOutputDirectories = await processVideos(llmModel, "2026-02-14");
+  const podcastOutputDirectories = await processVideos(
+    llmModel,
+    dateArgs.length === 0 ? null : dateArgs,
+  );
   await stageEpisodes(podcastOutputDirectories);
   await publishPodcastRelease();
 }
