@@ -95,8 +95,6 @@ interface SourceEpisode {
   source: EpisodeManifest["source"];
 }
 
-await main(process.argv.slice(2));
-
 async function main(args: string[]): Promise<void> {
   const command = args[0];
 
@@ -105,7 +103,7 @@ async function main(args: string[]): Promise<void> {
     if (outputDirectory === undefined) {
       throw new Error("Usage: bun run podcast.ts stage <output-directory>");
     }
-    await stageEpisode(outputDirectory);
+    await stageEpisodes([outputDirectory]);
     return;
   }
 
@@ -117,18 +115,40 @@ async function main(args: string[]): Promise<void> {
   throw new Error("Usage: bun run podcast.ts <stage|build> ...");
 }
 
-async function stageEpisode(outputDirectory: string): Promise<void> {
+export async function stageEpisodes(
+  outputDirectories: readonly string[],
+): Promise<void> {
   const config = loadPodcastConfig();
-  const uploadEnvironment = await loadPodcastUploadEnvironment();
-  const sourceEpisode = await readSourceEpisode(
-    outputDirectory,
-    config.defaultPublishTime,
-  );
-  const audioUrl = await uploadEpisodeAudio(sourceEpisode, uploadEnvironment);
-  const episodeManifest = buildEpisodeManifest(sourceEpisode, audioUrl);
-  writeEpisodeManifest(episodeManifest);
+  let uploadEnvironment: PodcastUploadCredentials | null = null;
+
+  for (const outputDirectory of outputDirectories) {
+    const sourceEpisode = await readSourceEpisode(
+      outputDirectory,
+      config.defaultPublishTime,
+    );
+    const existingManifest = readExistingEpisodeManifest(sourceEpisode);
+    if (
+      existingManifest !== null &&
+      JSON.stringify(
+        buildEpisodeManifest(sourceEpisode, existingManifest.audioUrl),
+      ) === JSON.stringify(existingManifest)
+    ) {
+      console.log(`Podcast unchanged ${sourceEpisode.id}`);
+      continue;
+    }
+
+    uploadEnvironment ??= await loadPodcastUploadEnvironment();
+    const audioUrl = await uploadEpisodeAudio(sourceEpisode, uploadEnvironment);
+    const episodeManifest = buildEpisodeManifest(sourceEpisode, audioUrl);
+    writeEpisodeManifest(episodeManifest);
+    console.log(`Staged ${episodeManifest.id}`);
+  }
+
   buildPodcastSite(config, loadEpisodeManifests());
-  console.log(`Staged ${episodeManifest.id}`);
+}
+
+if (import.meta.main) {
+  await main(process.argv.slice(2));
 }
 
 function buildPodcastSite(
@@ -183,6 +203,24 @@ function loadEpisodeManifests(): EpisodeManifest[] {
       episodeManifestSchema.parse(
         JSON.parse(readFileSync(manifestPath, "utf8")),
       ),
+  );
+}
+
+function readExistingEpisodeManifest(
+  sourceEpisode: SourceEpisode,
+): EpisodeManifest | null {
+  const episodeManifestPath = resolve(
+    PODCAST_EPISODES_ROOT,
+    sourceEpisode.seasonNumber,
+    `${sourceEpisode.episodeNumber}.json`,
+  );
+
+  if (!existsSync(episodeManifestPath)) {
+    return null;
+  }
+
+  return episodeManifestSchema.parse(
+    JSON.parse(readFileSync(episodeManifestPath, "utf8")),
   );
 }
 
@@ -432,12 +470,18 @@ function buildFeedItemXml(
   coverImageUrl: string,
   episodeManifest: EpisodeManifest,
 ): string {
+  const descriptionHtml = episodeManifest.description
+    .trimEnd()
+    .split("\n")
+    .map((line) => htmlEscape(line))
+    .join("<br />\n");
+
   return `    <item>
       <title>${xmlEscape(episodeManifest.title)}</title>
       <link>${xmlEscape(`${siteUrl}/#${episodeManifest.id}`)}</link>
       <guid isPermaLink="false">${xmlEscape(episodeManifest.guid)}</guid>
-      <description>${xmlEscape(episodeManifest.description)}</description>
-      <content:encoded><![CDATA[${episodeManifest.description}]]></content:encoded>
+      <description><![CDATA[${descriptionHtml}]]></description>
+      <content:encoded><![CDATA[${descriptionHtml}]]></content:encoded>
       <pubDate>${xmlEscape(new Date(episodeManifest.publishedAt).toUTCString())}</pubDate>
       <enclosure url="${xmlEscape(episodeManifest.audioUrl)}" length="${episodeManifest.audioBytes}" type="${xmlEscape(episodeManifest.audioType)}" />
       <itunes:title>${xmlEscape(episodeManifest.title)}</itunes:title>
