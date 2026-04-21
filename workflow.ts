@@ -15,6 +15,7 @@ import {
   isDateValue,
 } from "./bili_video";
 import {
+  createConcurrencyLimiter,
   createOrderedConcurrencyRunner,
   type OrderedTaskRunner,
 } from "./concurrency";
@@ -183,7 +184,15 @@ async function processVideos(
           await Promise.all(
             videoProcessingStates.flatMap((state) =>
               state.parts.map((part, index) =>
-                processVideoPartTask(state, part, index, client, progressDisplay),
+                processVideoPartLimited(() =>
+                  processVideoPartTask(
+                    state,
+                    part,
+                    index,
+                    client,
+                    progressDisplay,
+                  ),
+                ),
               ),
             ),
           );
@@ -219,6 +228,8 @@ async function processVideos(
     },
   );
 }
+
+const processVideoPartLimited = createConcurrencyLimiter(LLM_CONCURRENCY);
 
 async function initializeVideoProcessingState(
   video: BiliVideo,
