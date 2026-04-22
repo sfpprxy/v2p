@@ -109,7 +109,7 @@ export interface ProcessedPartResultsSummary {
   partReports: PartReport[];
   processedParts: ProcessedPartOfftopic[];
   mergePaths: VideoMergePaths | undefined;
-  firstRejectedResult: PromiseRejectedResult | undefined;
+  firstFailedResult: PromiseRejectedResult | undefined;
 }
 
 export function buildWorkflowReportError(error: unknown): WorkflowReportError {
@@ -170,7 +170,7 @@ export function summarizeProcessedPartResults(
     partReports,
     processedParts,
     mergePaths,
-    firstRejectedResult: processedPartSettledResults.find(
+    firstFailedResult: processedPartSettledResults.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     ),
   };

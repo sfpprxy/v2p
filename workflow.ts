@@ -199,11 +199,11 @@ async function processVideos(
           const finalizedVideoResults = await Promise.allSettled(
             videoProcessingStates.map((state) => state.finalizeResultPromise),
           );
-          const firstRejectedResult = finalizedVideoResults.find(
+          const firstFailedFinalizeResult = finalizedVideoResults.find(
             (result): result is PromiseRejectedResult => result.status === "rejected",
           );
-          if (firstRejectedResult !== undefined) {
-            throw firstRejectedResult.reason;
+          if (firstFailedFinalizeResult !== undefined) {
+            throw firstFailedFinalizeResult.reason;
           }
           return finalizedVideoResults.flatMap((result) =>
             result.status === "fulfilled" && result.value !== null
@@ -369,7 +369,7 @@ async function finalizeVideoProcessingState(
     return;
   }
   state.isFinalized = true;
-  const { partReports, processedParts, mergePaths, firstRejectedResult } =
+  const { partReports, processedParts, mergePaths, firstFailedResult } =
     summarizeProcessedPartResults(
       state.processedPartSettledResults,
       state.parts,
@@ -378,7 +378,7 @@ async function finalizeVideoProcessingState(
       state.video.bvid,
     );
 
-  if (firstRejectedResult !== undefined) {
+  if (firstFailedResult !== undefined) {
     try {
       await writeVideoReport(state.reportPath, {
         bvid: state.video.bvid,
@@ -390,13 +390,13 @@ async function finalizeVideoProcessingState(
         status: "error",
         paths: mergePaths,
         parts: partReports,
-        error: buildWorkflowReportError(firstRejectedResult.reason),
+        error: buildWorkflowReportError(firstFailedResult.reason),
       } satisfies VideoReport);
     } catch (error) {
       state.rejectFinalizeResult(error);
       return;
     }
-    state.rejectFinalizeResult(firstRejectedResult.reason);
+    state.rejectFinalizeResult(firstFailedResult.reason);
     return;
   }
 
@@ -615,14 +615,16 @@ async function processPart(
           );
         }
 
-        const extractResult = await runLlmOrdered(part.page, () =>
-          extractSegments(subtitlePath, part.tittle, llmModel),
-        );
+        const [extractResult, audioPath] = await Promise.all([
+          runLlmOrdered(part.page, () =>
+            extractSegments(subtitlePath, part.tittle, llmModel),
+          ),
+          runAudioDownloadOrdered(part.page, () =>
+            downloadAudio(part, client, outputDir),
+          ),
+        ]);
         const { segments, fixes } = extractResult;
         span.set({ segmentCount: segments.length });
-        const audioPath = await runAudioDownloadOrdered(part.page, () =>
-          downloadAudio(part, client, outputDir),
-        );
 
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
