@@ -41,6 +41,8 @@ import { Client } from "@renmu/bili-api";
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
 const DATE_IN_TITLE_PATTERN = /(^|[^0-9])(\d{1,2})月(\d{1,2})(?:号|日)/u;
+const VISIBLE_PART_PROGRESS_SLOT_COUNT = 20;
+const FINISHED_PART_PROGRESS_VISIBLE_MS = 2000;
 const PODCAST_RELEASE_PATHS = ["podcast/episodes"];
 
 interface VideoOutputContext {
@@ -58,12 +60,20 @@ interface VideoPartProgressState {
   title: string;
   status: "pending" | "running" | "ok" | "skipped" | "error";
   startedMs: number | null;
+  completedMs: number | null;
   processingTime: string | null;
 }
 
 interface WorkflowProgressDisplay {
   multibar: MultiBar;
   totalBar: SingleBar;
+  partBars: SingleBar[];
+}
+
+interface VisiblePartProgress {
+  globalIndex: number;
+  videoTitle: string;
+  part: VideoPartProgressState;
 }
 
 interface VideoProcessingState {
@@ -75,7 +85,6 @@ interface VideoProcessingState {
   videoStartedMs: number;
   progressVideoTitle: string;
   partProgressStates: VideoPartProgressState[];
-  partBars: SingleBar[];
   runAudioDownloadOrdered: OrderedTaskRunner<number>;
   runLlmOrdered: OrderedTaskRunner<number>;
   processedPartSettledResults: PromiseSettledResult<ProcessPartResult>[];
@@ -157,30 +166,43 @@ async function processVideos(
           totalBar: multibar.create(totalPartCount, 0, {
             title: totalProgressTitle,
           }),
+          partBars: Array.from(
+            {
+              length: Math.min(totalPartCount, VISIBLE_PART_PROGRESS_SLOT_COUNT),
+            },
+            () =>
+              multibar.create(
+                1,
+                0,
+                {
+                  videoTitle: "",
+                  label: "",
+                  status: "",
+                  processingTime: "",
+                  title: "",
+                },
+                {
+                  format: "{videoTitle} {label} {status} {processingTime} {title}",
+                },
+              ),
+          ),
         } satisfies WorkflowProgressDisplay;
         const videoProcessingStates: VideoProcessingState[] = [];
         let progressTimer: ReturnType<typeof setInterval> | null = null;
         try {
-          videoProcessingStates.push(
-            ...(await Promise.all(
-              videosWithParts.map(({ video, parts }) =>
-                initializeVideoProcessingState(
-                  video,
-                  parts,
-                  llmModel,
-                  progressDisplay,
-                ),
+          for (const { video, parts } of videosWithParts) {
+            videoProcessingStates.push(
+              await initializeVideoProcessingState(
+                video,
+                parts,
+                llmModel,
               ),
-            )),
-          );
-          progressTimer = setInterval(() => {
-            for (const state of videoProcessingStates) {
-              updateVideoProgressBars(state);
-            }
-          }, 100);
-          for (const state of videoProcessingStates) {
-            updateVideoProgressBars(state);
+            );
           }
+          progressTimer = setInterval(() => {
+            updateWorkflowProgressBars(progressDisplay, videoProcessingStates);
+          }, 100);
+          updateWorkflowProgressBars(progressDisplay, videoProcessingStates);
           await Promise.all(
             videoProcessingStates.flatMap((state) =>
               state.parts.map((part, index) =>
@@ -214,11 +236,9 @@ async function processVideos(
           if (progressTimer !== null) {
             clearInterval(progressTimer);
           }
-          for (const state of videoProcessingStates) {
-            updateVideoProgressBars(state);
-            for (const partBar of state.partBars.toReversed()) {
-              progressDisplay.multibar.remove(partBar);
-            }
+          updateWorkflowProgressBars(progressDisplay, videoProcessingStates);
+          for (const partBar of progressDisplay.partBars.toReversed()) {
+            progressDisplay.multibar.remove(partBar);
           }
           multibar.stop();
         }
@@ -235,7 +255,6 @@ async function initializeVideoProcessingState(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
-  progressDisplay: WorkflowProgressDisplay,
 ): Promise<VideoProcessingState> {
   const { outputDir, reportPath } = buildVideoOutputContext(video);
   mkdirSync(outputDir, { recursive: true });
@@ -245,18 +264,9 @@ async function initializeVideoProcessingState(
     title: part.tittle,
     status: "pending",
     startedMs: null,
+    completedMs: null,
     processingTime: null,
   }));
-  const partBars = partProgressStates.map((part) =>
-    progressDisplay.multibar.create(
-      1,
-      0,
-      buildPartProgressPayload(progressVideoTitle, part),
-      {
-        format: "{videoTitle} {label} {status} {processingTime} {title}",
-      },
-    ),
-  );
   const processablePartPages = parts
     .filter((part) => part.duration >= 10)
     .map((part) => part.page);
@@ -278,7 +288,6 @@ async function initializeVideoProcessingState(
     videoStartedMs: performance.now(),
     progressVideoTitle,
     partProgressStates,
-    partBars,
     runAudioDownloadOrdered: createOrderedConcurrencyRunner(
       processablePartPages,
       AUDIO_DOWNLOAD_CONCURRENCY,
@@ -303,7 +312,6 @@ async function initializeVideoProcessingState(
     status: "running",
     parts: [],
   } satisfies VideoReport);
-  updateVideoProgressBars(state);
   if (parts.length === 0) {
     await finalizeVideoProcessingState(state).catch(() => undefined);
   }
@@ -319,8 +327,8 @@ async function processVideoPartTask(
 ): Promise<void> {
   state.partProgressStates[partIndex].status = "running";
   state.partProgressStates[partIndex].startedMs = performance.now();
+  state.partProgressStates[partIndex].completedMs = null;
   state.partProgressStates[partIndex].processingTime = null;
-  updateVideoProgressBars(state);
   const partStartedMs = state.partProgressStates[partIndex].startedMs;
   if (partStartedMs === null) {
     throw new Error(
@@ -342,6 +350,7 @@ async function processVideoPartTask(
       value: result,
     } satisfies PromiseFulfilledResult<ProcessPartResult>;
     state.partProgressStates[partIndex].status = result.report.status;
+    state.partProgressStates[partIndex].completedMs = performance.now();
     state.partProgressStates[partIndex].processingTime = result.report.processingTime;
   } catch (error) {
     state.processedPartSettledResults[partIndex] = {
@@ -349,11 +358,11 @@ async function processVideoPartTask(
       reason: error,
     } satisfies PromiseRejectedResult;
     state.partProgressStates[partIndex].status = "error";
+    state.partProgressStates[partIndex].completedMs = performance.now();
     state.partProgressStates[partIndex].processingTime = formatProcessingTime(
       performance.now() - partStartedMs,
     );
   } finally {
-    updateVideoProgressBars(state);
     progressDisplay.totalBar.increment();
     state.completedPartCount += 1;
     if (state.completedPartCount === state.parts.length) {
@@ -451,11 +460,80 @@ async function finalizeVideoProcessingState(
   state.resolveFinalizeResult(processedParts.length === 0 ? null : state.outputDir);
 }
 
-function updateVideoProgressBars(state: VideoProcessingState): void {
-  for (const [index, part] of state.partProgressStates.entries()) {
-    state.partBars[index].update(
-      part.status === "pending" || part.status === "running" ? 0 : 1,
-      buildPartProgressPayload(state.progressVideoTitle, part),
+function updateWorkflowProgressBars(
+  progressDisplay: WorkflowProgressDisplay,
+  states: readonly VideoProcessingState[],
+): void {
+  const now = performance.now();
+  const visibleParts: VisiblePartProgress[] = [];
+  let globalIndex = 0;
+  for (const state of states) {
+    for (const part of state.partProgressStates) {
+      if (
+        (part.status === "ok" || part.status === "skipped") &&
+        (part.completedMs === null ||
+          now - part.completedMs > FINISHED_PART_PROGRESS_VISIBLE_MS)
+      ) {
+        globalIndex += 1;
+        continue;
+      }
+
+      visibleParts.push({
+        globalIndex,
+        videoTitle: state.progressVideoTitle,
+        part,
+      });
+      globalIndex += 1;
+    }
+  }
+
+  visibleParts.sort((left, right) => {
+    const leftRank =
+      left.part.status === "error"
+        ? 0
+        : left.part.status === "running"
+          ? 1
+          : left.part.status === "skipped"
+            ? 2
+            : left.part.status === "ok"
+              ? 3
+              : 4;
+    const rightRank =
+      right.part.status === "error"
+        ? 0
+        : right.part.status === "running"
+          ? 1
+          : right.part.status === "skipped"
+            ? 2
+            : right.part.status === "ok"
+              ? 3
+              : 4;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    return left.globalIndex - right.globalIndex;
+  });
+
+  for (const [index, partBar] of progressDisplay.partBars.entries()) {
+    const visiblePart = visibleParts[index];
+    if (visiblePart === undefined) {
+      partBar.update(0, {
+        videoTitle: "",
+        label: "",
+        status: "",
+        processingTime: "",
+        title: "",
+      });
+      continue;
+    }
+
+    partBar.update(
+      visiblePart.part.status === "pending" ||
+        visiblePart.part.status === "running"
+        ? 0
+        : 1,
+      buildPartProgressPayload(visiblePart.videoTitle, visiblePart.part),
     );
   }
 }
