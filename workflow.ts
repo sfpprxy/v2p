@@ -40,6 +40,7 @@ import { Client } from "@renmu/bili-api";
 
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
+const PROCESSABLE_VIDEO_TITLE_PREFIX = "【星际老男孩】";
 const DATE_IN_TITLE_PATTERN = /(^|[^0-9])(\d{1,2})月(\d{1,2})(?:号|日)/u;
 const VISIBLE_PART_PROGRESS_SLOT_COUNT = 20;
 const FINISHED_PART_PROGRESS_VISIBLE_MS = 2000;
@@ -117,8 +118,19 @@ async function processVideos(
       const client = buildBiliClient();
       const store = BiliVideoStore.open();
       try {
-        const videos = store.listVideos(dateInTitle);
-        span.set({ videoCount: videos.length });
+        const listedVideos = store.listVideos(dateInTitle);
+        const videos = listedVideos.filter((video) =>
+          video.title.startsWith(PROCESSABLE_VIDEO_TITLE_PREFIX),
+        );
+        if (listedVideos.length !== videos.length) {
+          console.log(
+            `[processVideos:skip] ignored ${listedVideos.length - videos.length} videos without ${PROCESSABLE_VIDEO_TITLE_PREFIX} title prefix`,
+          );
+        }
+        span.set({
+          videoCount: videos.length,
+          skippedVideoCount: listedVideos.length - videos.length,
+        });
 
         const videosWithParts: VideoWithParts[] = [];
         for (const video of videos) {
@@ -545,7 +557,7 @@ function buildProgressVideoTitle(videoTitle: string): string {
       ? null
       : `${dateMatch[2]!.padStart(2, "0")}-${dateMatch[3]!.padStart(2, "0")}`;
   const normalizedTitle = videoTitle
-    .replaceAll("【星际老男孩】", "")
+    .replaceAll(PROCESSABLE_VIDEO_TITLE_PREFIX, "")
     .replace(DATE_IN_TITLE_PATTERN, " ")
     .replace(/[()（）[\]【】]/gu, " ")
     .replace(/[,:，、+]/gu, " ")
@@ -613,7 +625,7 @@ function buildVideoOutputContext(video: BiliVideo): VideoOutputContext {
     Number(titleDateMatch?.[3] ?? uploadAt.getUTCDate()),
   ).padStart(2, "0");
   const outputTitle = video.title
-    .replaceAll("【星际老男孩】", "")
+    .replaceAll(PROCESSABLE_VIDEO_TITLE_PREFIX, "")
     .replace(/[/:]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
