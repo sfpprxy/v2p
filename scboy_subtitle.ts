@@ -39,7 +39,7 @@ export interface ExtractSegmentsResult {
 }
 
 export type Segments = Segment[];
-const MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS = 15_000;
+const MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS = 30_000;
 
 export async function extractSegments(
   subtitlePath: string,
