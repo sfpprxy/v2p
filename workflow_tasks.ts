@@ -13,6 +13,7 @@ import {
   buildMergedOfftopicShownotes,
   type ProcessedPartOfftopic,
 } from "./shownotes";
+import { runWithRetry } from "./workflow_retry";
 import {
   buildWorkflowReportError,
   formatProcessingTime,
@@ -78,15 +79,21 @@ export async function processPart(
           );
         }
 
-        const [extractResult, audioPath] = await Promise.all([
+        const [segmentResult, audioPath] = await Promise.all([
           runLlmOrdered(part.page, () =>
-            extractSegments(subtitlePath, part.tittle, llmModel),
+            runWithRetry(
+              async () => extractSegments(subtitlePath, part.tittle, llmModel),
+              {
+                maxAttempts: 3,
+                decide: () => "retry",
+              },
+            ),
           ),
           runAudioDownloadOrdered(part.page, () =>
             downloadAudio(part, client, outputDir),
           ),
         ]);
-        const { segments, fixes } = extractResult;
+        const { segments, fixes } = segmentResult.value;
         span.set({ segmentCount: segments.length });
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
@@ -102,6 +109,7 @@ export async function processPart(
           report: {
             ...baseReport,
             status: "ok",
+            attemptCount: segmentResult.attemptCount,
             processingTime: formatProcessingTime(
               performance.now() - partStartedMs,
             ),

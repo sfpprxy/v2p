@@ -11,6 +11,7 @@ import { mergeVideoOfftopicOutputs, processPart } from "./workflow_tasks";
 import {
   buildWorkflowReportError,
   formatProcessingTime,
+  type PublishReport,
   type VideoReport,
   writeVideoReport,
 } from "./workflow_report";
@@ -66,6 +67,9 @@ export async function startVideoExecution(
     processingTime: formatProcessingTime(0),
     status: "running",
     parts: [],
+    publish: {
+      status: "pending",
+    },
   } satisfies VideoReport);
 
   const runAudioDownloadOrdered = createOrderedConcurrencyRunner(
@@ -111,6 +115,8 @@ export async function startVideoExecution(
               type: "partSucceeded",
               partIndex,
               completedMs: performance.now(),
+              attemptCount:
+                result.report.status === "ok" ? result.report.attemptCount : null,
               result,
             }),
           );
@@ -120,6 +126,7 @@ export async function startVideoExecution(
               type: "partFailed",
               partIndex,
               completedMs: performance.now(),
+              attemptCount: getRetryAttemptCount(error),
               error,
             }),
           );
@@ -176,6 +183,9 @@ async function finalizeVideoExecution(
         status: "error",
         paths: mergePaths,
         parts: partReports,
+        publish: {
+          status: "pending",
+        } satisfies PublishReport,
         error: buildWorkflowReportError(firstFailedResult.reason),
       } satisfies VideoReport);
     } catch (error) {
@@ -208,6 +218,9 @@ async function finalizeVideoExecution(
         status: "error",
         paths: mergePaths,
         parts: partReports,
+        publish: {
+          status: "pending",
+        } satisfies PublishReport,
         error: buildWorkflowReportError(error),
       } satisfies VideoReport);
     } catch (reportError) {
@@ -228,6 +241,9 @@ async function finalizeVideoExecution(
       ),
       status: "ok",
       parts: partReports,
+      publish: {
+        status: "pending",
+      },
     } satisfies VideoReport);
   } catch (error) {
     rejectCompletion(error);
@@ -237,4 +253,12 @@ async function finalizeVideoExecution(
   resolveCompletion(
     processedParts.length === 0 ? null : finalizedState.plan.outputDir,
   );
+}
+
+function getRetryAttemptCount(error: unknown): number | null {
+  return error instanceof Error &&
+    "attemptCount" in error &&
+    typeof error.attemptCount === "number"
+    ? error.attemptCount
+    : null;
 }

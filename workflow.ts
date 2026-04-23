@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { $ } from "bun";
@@ -20,6 +20,11 @@ import {
   type VideoExecutionController,
 } from "./workflow_executor";
 import { DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL } from "./llm";
+import { runWithRetry } from "./workflow_retry";
+import {
+  buildWorkflowReportError,
+  updateVideoReportPublishStatus,
+} from "./workflow_report";
 
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
@@ -185,10 +190,12 @@ if (import.meta.main) {
     dateArgs.length === 0 ? null : dateArgs,
   );
   await stageEpisodes(podcastOutputDirectories);
-  await publishPodcastRelease();
+  await publishPodcastRelease(podcastOutputDirectories);
 }
 
-async function publishPodcastRelease(): Promise<void> {
+async function publishPodcastRelease(
+  podcastOutputDirectories: readonly string[],
+): Promise<void> {
   for (const releasePath of PODCAST_RELEASE_PATHS) {
     await runGit(["add", releasePath]);
   }
@@ -266,10 +273,43 @@ async function publishPodcastRelease(): Promise<void> {
   );
   if (releaseAheadStatus === "clean") {
     console.log("Podcast release unchanged; nothing to push.");
+    await updatePublishStatusForOutputDirectories(podcastOutputDirectories, {
+      status: "ok",
+      attemptCount: 1,
+    });
     return;
   }
 
-  await runGit(["push"], false);
+  try {
+    const { attemptCount } = await runWithRetry(
+      async () => {
+        await runGit(["push"], false);
+      },
+      {
+        maxAttempts: 3,
+        decide: () => "retry",
+      },
+    );
+    await updatePublishStatusForOutputDirectories(podcastOutputDirectories, {
+      status: "ok",
+      attemptCount,
+    });
+  } catch (error) {
+    const attemptCount =
+      error instanceof Error &&
+      "attemptCount" in error &&
+      typeof error.attemptCount === "number"
+        ? error.attemptCount
+        : 1;
+    const publishError =
+      error instanceof Error && "cause" in error ? error.cause : error;
+    await updatePublishStatusForOutputDirectories(podcastOutputDirectories, {
+      status: "error",
+      attemptCount,
+      error: buildWorkflowReportError(publishError),
+    });
+    throw publishError;
+  }
 }
 
 async function runGit(
@@ -295,4 +335,37 @@ async function readGitDiffQuietStatus(
   }
 
   throw new Error(`Git diff status check failed with code ${result.exitCode}`);
+}
+
+async function updatePublishStatusForOutputDirectories(
+  podcastOutputDirectories: readonly string[],
+  publish:
+    | {
+        status: "ok";
+        attemptCount: number;
+      }
+    | {
+        status: "error";
+        attemptCount: number;
+        error: ReturnType<typeof buildWorkflowReportError>;
+      },
+): Promise<void> {
+  for (const outputDirectory of podcastOutputDirectories) {
+    await updateVideoReportPublishStatus(
+      findVideoReportPath(outputDirectory),
+      publish,
+    );
+  }
+}
+
+function findVideoReportPath(outputDirectory: string): string {
+  const reportFilenames = readdirSync(outputDirectory).filter((filename) =>
+    filename.endsWith(".report.json"),
+  );
+  if (reportFilenames.length !== 1) {
+    throw new Error(
+      `Expected exactly one report file in ${outputDirectory}, got ${reportFilenames.length}`,
+    );
+  }
+  return resolve(outputDirectory, reportFilenames[0]!);
 }

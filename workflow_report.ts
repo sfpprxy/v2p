@@ -31,6 +31,7 @@ interface PartReportBase {
 
 export interface PartReportOk extends PartReportBase {
   status: "ok";
+  attemptCount: number;
   segmentCount: number;
   segmentFixes?: PartReportFix[];
 }
@@ -51,6 +52,7 @@ export interface PartReportSkippedMissingSubtitle extends PartReportBase {
 
 export interface PartReportError extends PartReportBase {
   status: "error";
+  attemptCount?: number;
   error: WorkflowReportError;
 }
 
@@ -71,7 +73,28 @@ interface VideoReportBase {
   llmModel: string;
   processingTime: string;
   parts: PartReport[];
+  publish?: PublishReport;
 }
+
+export interface PublishReportPending {
+  status: "pending";
+}
+
+export interface PublishReportOk {
+  status: "ok";
+  attemptCount: number;
+}
+
+export interface PublishReportError {
+  status: "error";
+  attemptCount: number;
+  error: WorkflowReportError;
+}
+
+export type PublishReport =
+  | PublishReportPending
+  | PublishReportOk
+  | PublishReportError;
 
 export interface VideoReportRunning extends VideoReportBase {
   status: "running";
@@ -130,9 +153,21 @@ export async function writeVideoReport(
   await Bun.write(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 }
 
+export async function updateVideoReportPublishStatus(
+  reportPath: string,
+  publish: PublishReport,
+): Promise<void> {
+  const report = (await Bun.file(reportPath).json()) as VideoReport;
+  await writeVideoReport(reportPath, {
+    ...report,
+    publish,
+  });
+}
+
 export function summarizeProcessedPartResults(
   processedPartSettledResults: PromiseSettledResult<ProcessPartResult>[],
   parts: readonly BiliVideoPart[],
+  attemptCounts: readonly (number | null)[],
   videoStartedMs: number,
   outputDir: string,
   bvid: string,
@@ -149,6 +184,7 @@ export function summarizeProcessedPartResults(
       durationSeconds: parts[index].duration,
       processingTime,
       status: "error",
+      attemptCount: attemptCounts[index] ?? undefined,
       error: buildWorkflowReportError(result.reason),
     } satisfies PartReport;
   });

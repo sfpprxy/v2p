@@ -10,6 +10,7 @@ import type {
 } from "./workflow_progress";
 
 export interface VideoPartExecutionState {
+  attemptCount: number | null;
   progress: VideoPartProgressState;
   settledResult: PromiseSettledResult<ProcessPartResult> | null;
 }
@@ -31,12 +32,14 @@ export type VideoExecutionEvent =
       type: "partSucceeded";
       partIndex: number;
       completedMs: number;
+      attemptCount: number | null;
       result: ProcessPartResult;
     }
   | {
       type: "partFailed";
       partIndex: number;
       completedMs: number;
+      attemptCount: number | null;
       error: unknown;
     }
   | {
@@ -51,6 +54,7 @@ export function createVideoExecutionState(
     plan,
     videoStartedMs,
     partStates: plan.parts.map((part) => ({
+      attemptCount: null,
       progress: {
         page: part.page,
         title: part.tittle,
@@ -95,6 +99,7 @@ export function reduceVideoExecutionState(
           index !== event.partIndex
             ? partState
             : {
+                attemptCount: event.attemptCount,
                 settledResult: {
                   status: "fulfilled",
                   value: event.result,
@@ -115,6 +120,7 @@ export function reduceVideoExecutionState(
           index !== event.partIndex
             ? partState
             : {
+                attemptCount: event.attemptCount,
                 settledResult: {
                   status: "rejected",
                   reason: event.error,
@@ -171,6 +177,7 @@ export function summarizeVideoExecutionState(state: VideoExecutionState): Return
       return partState.settledResult;
     }),
     state.plan.parts,
+    state.partStates.map((partState) => partState.attemptCount),
     state.videoStartedMs,
     state.plan.outputDir,
     state.plan.video.bvid,
