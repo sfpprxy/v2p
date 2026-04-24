@@ -22,6 +22,7 @@ import {
   startVideoExecution,
   type VideoExecutionController,
 } from "./workflow_executor";
+import type { WorkflowRunOptions } from "./workflow_plan";
 import { DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL } from "./llm";
 import { runWithRetry } from "./workflow_retry";
 import {
@@ -41,12 +42,15 @@ interface VideoWithParts {
 
 async function processVideos(
   llmModel: string,
+  runOptions: WorkflowRunOptions,
   dateInTitle?: string | [string, string] | string[] | null,
 ): Promise<ScboyProcessedVideo[]> {
   return profileSpan(
     "processVideos",
     {
       llmModel,
+      segmentExtraction: runOptions.segmentExtraction,
+      forcePodcastUpload: runOptions.forcePodcastUpload,
       dateInTitle: Array.isArray(dateInTitle)
         ? dateInTitle.join(" ")
         : (dateInTitle ?? null),
@@ -108,7 +112,13 @@ async function processVideos(
           for (const { video, parts } of videosWithParts) {
             videoExecutions.push(
               await startVideoExecution(
-                buildScboyVideoExecutionPlan(video, parts, llmModel, OUTPUT_ROOT),
+                buildScboyVideoExecutionPlan(
+                  video,
+                  parts,
+                  llmModel,
+                  runOptions,
+                  OUTPUT_ROOT,
+                ),
                 client,
                 progressDisplay,
               ),
@@ -173,8 +183,11 @@ async function processVideos(
 if (import.meta.main) {
   const modelArgs: string[] = [];
   const dateArgs: string[] = [];
+  let rerun = false;
   for (const arg of process.argv.slice(2)) {
-    if (arg === "gemini" || arg === "codex") {
+    if (arg === "--rerun") {
+      rerun = true;
+    } else if (arg === "gemini" || arg === "codex") {
       modelArgs.push(arg);
     } else if (isDateValue(arg)) {
       dateArgs.push(arg);
@@ -190,6 +203,15 @@ if (import.meta.main) {
   }
 
   const modelArg = modelArgs[0] ?? "gemini";
+  const runOptions: WorkflowRunOptions = rerun
+    ? {
+        segmentExtraction: "regenerate",
+        forcePodcastUpload: true,
+      }
+    : {
+        segmentExtraction: "reuse-existing",
+        forcePodcastUpload: false,
+      };
   let llmModel: string;
   switch (modelArg) {
     case "gemini":
@@ -204,10 +226,13 @@ if (import.meta.main) {
 
   const processedVideos = await processVideos(
     llmModel,
+    runOptions,
     dateArgs.length === 0 ? null : dateArgs,
   );
   const podcastStageInputs = buildScboyPodcastStageInputs(processedVideos);
-  await stageEpisodes(podcastStageInputs);
+  await stageEpisodes(podcastStageInputs, {
+    forceUpload: runOptions.forcePodcastUpload,
+  });
   await publishPodcastRelease(podcastStageInputs);
 }
 

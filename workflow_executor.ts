@@ -102,6 +102,7 @@ export async function startVideoExecution(
             runAudioDownloadOrdered,
             runLlmOrdered,
             plan.llmModel,
+            plan.runOptions,
             (attemptCount, maxAttempts) => {
               updateState(
                 reduceVideoExecutionState(controller.getState(), {

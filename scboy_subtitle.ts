@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { format, parse } from "node:path";
 
 import { AudioTimestamp } from "./audio";
@@ -36,15 +37,27 @@ export interface SegmentFix {
 export interface ExtractSegmentsResult {
   segments: Segments;
   fixes: SegmentFix[];
+  metadata: SegmentExtractionMetadata | null;
 }
 
 export type Segments = Segment[];
+export interface SegmentExtractionMetadata {
+  llmModel: string;
+  segmentPromptHash: string;
+  subtitleSha256: string;
+}
+
+export interface ExtractSegmentsOptions {
+  segmentExtraction: "reuse-existing" | "regenerate";
+}
+
 const MAX_SEGMENT_TIMESTAMP_FIX_OFFSET_MILLISECONDS = 30_000;
 
 export async function extractSegments(
   subtitlePath: string,
   partTitle: string,
   llmModel: string = DEFAULT_CODEX_MODEL,
+  options: ExtractSegmentsOptions = { segmentExtraction: "reuse-existing" },
   shouldLog = false,
 ): Promise<ExtractSegmentsResult> {
   return profileSpan(
@@ -71,13 +84,22 @@ export async function extractSegments(
         const originalSubtitleText = await Bun.file(subtitlePath).text();
         const { subtitleText, fixes: subtitleTextFixes } =
           fillEmptySubtitleBlocks(originalSubtitleText);
+        const extractionMetadata = buildSegmentExtractionMetadata(
+          normalizedPartTitle,
+          originalSubtitleText,
+          llmModel,
+        );
         span.set({
           subtitleBytes: subtitleText.length,
           subtitleFixCount: subtitleTextFixes.length,
+          segmentPromptHash: extractionMetadata.segmentPromptHash,
+          subtitleSha256: extractionMetadata.subtitleSha256,
         });
         const hasSavedSegments = await Bun.file(segmentJsonPath).exists();
-        span.set({ cacheHit: hasSavedSegments, segmentJsonPath });
-        if (hasSavedSegments) {
+        const shouldReuseSavedSegments =
+          hasSavedSegments && options.segmentExtraction === "reuse-existing";
+        span.set({ cacheHit: shouldReuseSavedSegments, segmentJsonPath });
+        if (shouldReuseSavedSegments) {
           const existingSegmentsText = await Bun.file(segmentJsonPath).text();
           segments = parseScboySubtitleJson(existingSegmentsText);
           ({ segments, fixes } = fixScboySubtitleSegmentsAgainstSubtitle(
@@ -96,7 +118,11 @@ export async function extractSegments(
           if (shouldLog) {
             console.log(`[extractSegments:skip] exists ${segmentJsonPath}`);
           }
-          return { segments, fixes: [...subtitleTextFixes, ...fixes] };
+          return {
+            segments,
+            fixes: [...subtitleTextFixes, ...fixes],
+            metadata: null,
+          };
         }
 
         const responseText = await gen(
@@ -116,7 +142,11 @@ export async function extractSegments(
           fixCount: subtitleTextFixes.length + fixes.length,
         });
         await saveExtractedSegments(subtitlePath, segments);
-        return { segments, fixes: [...subtitleTextFixes, ...fixes] };
+        return {
+          segments,
+          fixes: [...subtitleTextFixes, ...fixes],
+          metadata: extractionMetadata,
+        };
       } catch (error) {
         throw error;
       } finally {
@@ -160,12 +190,12 @@ function normalizePartTitle(partTitle: string): string {
 }
 
 function buildScboySubtitlePrompt(
-  partTitle: string,
+  _partTitle: string,
   subtitleText: string,
 ): string {
-  return `这段是星际老男孩直播${partTitle}时候的音频转字幕文本，其中有些文本是游戏内人物的台词。
-
-你帮我识别并分析一下。星际老男孩及他们的朋友。聊了哪些跟${partTitle}无关的内容？
+  return `这段是星际老男孩直播时候的音频转字幕文本，其中有些文本是游戏内人物语音转的台词。
+这段有可能是一场游戏对局或者比赛解说(2选1)，你帮我识别并分析一下，星际老男孩及他们的朋友，聊了哪些跟当前游戏对局或比赛无关的内容？(局前局后赛前赛后的交流讨论打趣也可算作对局/比赛无关)
+他们经常玩或解说的是DOTA/星际争霸2(包括RPG地图)/三角洲。
 
 字段名：start(开始时间戳)，end(结束时间戳)，summary(内容简单总结)。
 
@@ -180,6 +210,22 @@ start必须使用某条字幕时间行左侧的开始时间戳，end必须使用
 
 字幕文本如下：
 ${subtitleText}`;
+}
+
+function buildSegmentExtractionMetadata(
+  partTitle: string,
+  subtitleText: string,
+  llmModel: string,
+): SegmentExtractionMetadata {
+  return {
+    llmModel,
+    segmentPromptHash: hashText(buildScboySubtitlePrompt(partTitle, "")),
+    subtitleSha256: hashText(subtitleText),
+  };
+}
+
+function hashText(text: string): string {
+  return `sha256:${createHash("sha256").update(text).digest("hex")}`;
 }
 
 function validateScboySubtitleSegments(value: Segments): void {
@@ -262,7 +308,7 @@ function validateScboySubtitleSegments(value: Segments): void {
 function fixScboySubtitleSegmentsAgainstSubtitle(
   segments: Segments,
   subtitleText: string,
-): ExtractSegmentsResult {
+): Pick<ExtractSegmentsResult, "segments" | "fixes"> {
   const subtitleBlocks = readSubtitleBlocks(subtitleText);
   const fixes: SegmentFix[] = [];
 

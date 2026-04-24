@@ -9,6 +9,7 @@ import type { BiliVideoPart } from "./bili_video";
 import type { OrderedTaskRunner } from "./concurrency";
 import { profileSpan } from "./perf";
 import { buildSegmentJsonPath, extractSegments } from "./scboy_subtitle";
+import type { WorkflowRunOptions } from "./workflow_plan";
 import {
   buildMergedOfftopicShownotes,
   type ProcessedPartOfftopic,
@@ -27,6 +28,7 @@ export async function processPart(
   runAudioDownloadOrdered: OrderedTaskRunner<number>,
   runLlmOrdered: OrderedTaskRunner<number>,
   llmModel: string,
+  runOptions: WorkflowRunOptions,
   onPartAttemptStarted: (attemptCount: number, maxAttempts: number) => void,
 ): Promise<ProcessPartResult> {
   return profileSpan(
@@ -83,7 +85,10 @@ export async function processPart(
         const [segmentResult, audioPath] = await Promise.all([
           runLlmOrdered(part.page, () =>
             runWithRetry(
-              async () => extractSegments(subtitlePath, part.tittle, llmModel),
+              async () =>
+                extractSegments(subtitlePath, part.tittle, llmModel, {
+                  segmentExtraction: runOptions.segmentExtraction,
+                }),
               {
                 maxAttempts: 3,
                 decide: () => "retry",
@@ -95,7 +100,7 @@ export async function processPart(
             downloadAudio(part, client, outputDir),
           ),
         ]);
-        const { segments, fixes } = segmentResult.value;
+        const { segments, fixes, metadata } = segmentResult.value;
         span.set({ segmentCount: segments.length });
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
@@ -112,6 +117,13 @@ export async function processPart(
             ...baseReport,
             status: "ok",
             attemptCount: segmentResult.attemptCount,
+            ...(metadata === null
+              ? {}
+              : {
+                  llmModel: metadata.llmModel,
+                  segmentPromptHash: metadata.segmentPromptHash,
+                  subtitleSha256: metadata.subtitleSha256,
+                }),
             processingTime: formatProcessingTime(
               performance.now() - partStartedMs,
             ),

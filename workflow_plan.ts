@@ -7,10 +7,16 @@ export interface VideoOutputContext {
   reportPath: string;
 }
 
+export interface WorkflowRunOptions {
+  segmentExtraction: "reuse-existing" | "regenerate";
+  forcePodcastUpload: boolean;
+}
+
 export interface VideoExecutionPlan extends VideoOutputContext {
   video: BiliVideo;
   parts: readonly BiliVideoPart[];
   llmModel: string;
+  runOptions: WorkflowRunOptions;
   progressVideoTitle: string;
   processablePartPages: readonly number[];
 }
@@ -19,6 +25,7 @@ export function buildVideoExecutionPlan(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
+  runOptions: WorkflowRunOptions,
   outputRoot: string,
   outputDirectoryName: string,
   progressVideoTitle: string,
@@ -28,6 +35,7 @@ export function buildVideoExecutionPlan(
     video,
     parts,
     llmModel,
+    runOptions,
     outputDir,
     reportPath: resolve(outputDir, `${video.bvid}.report.json`),
     progressVideoTitle,

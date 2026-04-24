@@ -87,6 +87,10 @@ export interface PodcastStageInput {
   episodeNumber: string;
 }
 
+export interface PodcastStageOptions {
+  forceUpload: boolean;
+}
+
 interface SourceEpisode {
   id: string;
   guid: string;
@@ -132,6 +136,7 @@ async function main(args: string[]): Promise<void> {
 
 export async function stageEpisodes(
   stageInputs: readonly PodcastStageInput[],
+  options: PodcastStageOptions = { forceUpload: false },
 ): Promise<void> {
   const config = loadPodcastConfig();
   let uploadEnvironment: PodcastUploadCredentials | null = null;
@@ -152,6 +157,7 @@ export async function stageEpisodes(
       );
     }
     if (
+      !options.forceUpload &&
       existingManifest !== null &&
       JSON.stringify(
         buildEpisodeManifest(sourceEpisode, existingManifest.audioUrl),

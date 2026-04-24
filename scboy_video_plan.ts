@@ -3,6 +3,7 @@ import type { PodcastStageInput } from "./podcast";
 import {
   buildVideoExecutionPlan,
   type VideoExecutionPlan,
+  type WorkflowRunOptions,
 } from "./workflow_plan";
 
 const PROCESSABLE_VIDEO_TITLE_PREFIX = "【星际老男孩】";
@@ -31,12 +32,14 @@ export function buildScboyVideoExecutionPlan(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
+  runOptions: WorkflowRunOptions,
   outputRoot: string,
 ): VideoExecutionPlan {
   return buildVideoExecutionPlan(
     video,
     parts,
     llmModel,
+    runOptions,
     outputRoot,
     buildScboyOutputDirectoryName(video),
     buildScboyProgressVideoTitle(video.title),

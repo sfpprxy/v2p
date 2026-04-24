@@ -32,6 +32,9 @@ interface PartReportBase {
 export interface PartReportOk extends PartReportBase {
   status: "ok";
   attemptCount: number;
+  llmModel?: string;
+  segmentPromptHash?: string;
+  subtitleSha256?: string;
   segmentCount: number;
   segmentFixes?: PartReportFix[];
 }
