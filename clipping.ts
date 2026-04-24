@@ -222,6 +222,8 @@ async function finalizeClipping(
       finalizedState.plan.video.bvid,
       clippedParts,
       finalizedState.plan.outputDir,
+      finalizedState.plan.seasonNumber,
+      finalizedState.plan.episodeNumber,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -367,18 +369,15 @@ async function clipPart(
             page: part.page,
             offtopicAudioPath: audioResult.outputPath,
             relativeSegmentsPath,
+            segmentPromptHash: metadata.segmentPromptHash,
           },
           report: {
             ...baseReport,
             status: "ok",
             attemptCount: segmentResult.attemptCount,
-            ...(metadata === null
-              ? {}
-              : {
-                  llmModel: metadata.llmModel,
-                  segmentPromptHash: metadata.segmentPromptHash,
-                  subtitleSha256: metadata.subtitleSha256,
-                }),
+            llmModel: metadata.llmModel,
+            segmentPromptHash: metadata.segmentPromptHash,
+            subtitleSha256: metadata.subtitleSha256,
             processingTime: formatProcessingTime(
               performance.now() - partStartedMs,
             ),
@@ -429,6 +428,8 @@ async function mergeClippingOutputs(
   bvid: string,
   parts: readonly ProcessedPartOfftopic[],
   outputDir: string,
+  seasonNumber: string,
+  episodeNumber: string,
 ): Promise<void> {
   await profileSpan(
     "mergeClippingOutputs",
@@ -446,7 +447,11 @@ async function mergeClippingOutputs(
         sortedParts.map((part) => part.offtopicAudioPath),
         mergedAudioPath,
       );
-      const shownotes = await buildMergedOfftopicShownotes(sortedParts);
+      const shownotes = await buildMergedOfftopicShownotes(sortedParts, {
+        generatedAt: new Date(),
+        seasonNumber,
+        episodeNumber,
+      });
       span.set({ shownoteCount: shownotes.length });
       await Bun.write(shownotesPath, `${shownotes.join("\n")}\n`);
     },

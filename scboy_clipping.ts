@@ -14,6 +14,11 @@ export interface ScboyClippingSource {
   parts: readonly BiliVideoPart[];
 }
 
+export type ScboyEpisodeVideo = readonly [
+  video: BiliVideo,
+  episodeNumber: string,
+];
+
 export interface ScboyClippingResult {
   video: BiliVideo;
   outputDir: string;
@@ -32,16 +37,20 @@ export function buildScboyClippingPlan(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
+  episodeNumber: string,
   clippingOptions: ClippingOptions,
   outputRoot: string,
 ): ClippingPlan {
+  const titleDate = parseScboyTitleDate(video);
   return buildClippingPlan(
     video,
     parts,
     llmModel,
+    titleDate.year,
+    episodeNumber,
     clippingOptions,
     outputRoot,
-    buildScboyOutputDirectoryName(video),
+    buildScboyOutputDirectoryName(video, titleDate),
     buildScboyClippingProgressTitle(video.title),
   );
 }
@@ -55,40 +64,42 @@ export function buildScboyPodcastStageInputs(
   }));
 }
 
-export function buildScboyEpisodeNumbers(
+export function buildScboyEpisodeVideos(
   videos: readonly BiliVideo[],
-): Map<string, string> {
-  const episodeNumbers = new Map<string, string>();
-  [...videos]
+): ScboyEpisodeVideo[] {
+  const episodeVideos = videos.map((video) => ({
+    video,
+    titleDate: parseScboyTitleDate(video),
+    episodeSequence: 1,
+  }));
+
+  [...episodeVideos]
     .sort((left, right) => {
-      const leftDate = parseScboyTitleDate(left);
-      const rightDate = parseScboyTitleDate(right);
+      const leftDate = left.titleDate;
+      const rightDate = right.titleDate;
       if (leftDate.key !== rightDate.key) {
         return leftDate.key.localeCompare(rightDate.key);
       }
-      const uploadTimeDiff = left.uploadAt.getTime() - right.uploadAt.getTime();
+      const uploadTimeDiff =
+        left.video.uploadAt.getTime() - right.video.uploadAt.getTime();
       return uploadTimeDiff === 0
-        ? left.bvid.localeCompare(right.bvid)
+        ? left.video.bvid.localeCompare(right.video.bvid)
         : uploadTimeDiff;
     })
-    .forEach((video, sortedIndex, sortedVideos) => {
-      const titleDate = parseScboyTitleDate(video);
-      let episodeSequence = 1;
+    .forEach((episodeVideo, sortedIndex, sortedEpisodeVideos) => {
       for (let index = sortedIndex - 1; index >= 0; index -= 1) {
-        const previousTitleDate = parseScboyTitleDate(sortedVideos[index]!);
-        if (previousTitleDate.key !== titleDate.key) {
+        const previousTitleDate = sortedEpisodeVideos[index]!.titleDate;
+        if (previousTitleDate.key !== episodeVideo.titleDate.key) {
           break;
         }
-        episodeSequence += 1;
+        episodeVideo.episodeSequence += 1;
       }
-
-      episodeNumbers.set(
-        video.bvid,
-        `${titleDate.month}${titleDate.day}-${episodeSequence}`,
-      );
     });
 
-  return episodeNumbers;
+  return episodeVideos.map(({ video, titleDate, episodeSequence }) => [
+    video,
+    `${titleDate.month}${titleDate.day}-${episodeSequence}`,
+  ]);
 }
 
 function buildScboyClippingProgressTitle(videoTitle: string): string {
@@ -122,8 +133,10 @@ function buildScboyClippingProgressTitle(videoTitle: string): string {
   return `${shortDate} ${topic}`;
 }
 
-function buildScboyOutputDirectoryName(video: BiliVideo): string {
-  const titleDate = parseScboyTitleDate(video);
+function buildScboyOutputDirectoryName(
+  video: BiliVideo,
+  titleDate: ReturnType<typeof parseScboyTitleDate>,
+): string {
   const outputTitle = video.title
     .replaceAll(PROCESSABLE_VIDEO_TITLE_PREFIX, "")
     .replace(/[/:]/gu, " ")

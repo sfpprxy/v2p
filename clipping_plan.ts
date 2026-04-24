@@ -15,6 +15,8 @@ export interface ClippingPlan extends ClippingOutputContext {
   video: BiliVideo;
   parts: readonly BiliVideoPart[];
   llmModel: string;
+  seasonNumber: string;
+  episodeNumber: string;
   clippingOptions: ClippingOptions;
   progressTitle: string;
   clippablePartPages: readonly number[];
@@ -24,6 +26,8 @@ export function buildClippingPlan(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
+  seasonNumber: string,
+  episodeNumber: string,
   clippingOptions: ClippingOptions,
   outputRoot: string,
   outputDirectoryName: string,
@@ -34,6 +38,8 @@ export function buildClippingPlan(
     video,
     parts,
     llmModel,
+    seasonNumber,
+    episodeNumber,
     clippingOptions,
     outputDir,
     reportPath: resolve(outputDir, `${video.bvid}.report.json`),

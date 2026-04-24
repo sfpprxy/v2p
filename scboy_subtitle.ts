@@ -37,7 +37,7 @@ export interface SegmentFix {
 export interface ExtractSegmentsResult {
   segments: Segments;
   fixes: SegmentFix[];
-  metadata: SegmentExtractionMetadata | null;
+  metadata: SegmentExtractionMetadata;
 }
 
 export type Segments = Segment[];
@@ -121,7 +121,7 @@ export async function extractSegments(
           return {
             segments,
             fixes: [...subtitleTextFixes, ...fixes],
-            metadata: null,
+            metadata: extractionMetadata,
           };
         }
 

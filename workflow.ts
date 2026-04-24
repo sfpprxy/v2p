@@ -15,7 +15,7 @@ import {
 } from "./progress";
 import {
   buildScboyPodcastStageInputs,
-  buildScboyEpisodeNumbers,
+  buildScboyEpisodeVideos,
   buildScboyClippingPlan,
   filterScboyClippableVideos,
   type ScboyClippingResult,
@@ -43,6 +43,7 @@ const FINISHED_CLIPPING_PART_PROGRESS_VISIBLE_MS = 2000;
 interface ClippingSource {
   video: BiliVideo;
   parts: readonly BiliVideoPart[];
+  episodeNumber: string;
 }
 
 interface WorkflowRunOptions {
@@ -86,10 +87,10 @@ async function runClipping(
           videoCount: videos.length,
           skippedVideoCount: listedVideos.length - videos.length,
         });
-        const episodeNumbers = buildScboyEpisodeNumbers(videos);
+        const episodeVideos = buildScboyEpisodeVideos(videos);
 
         const clippingSources: ClippingSource[] = [];
-        for (const video of videos) {
+        for (const [video, episodeNumber] of episodeVideos) {
           const parts = await profileSpan(
             "video.getParts",
             { bvid: video.bvid },
@@ -99,7 +100,7 @@ async function runClipping(
               return videoParts;
             },
           );
-          clippingSources.push({ video, parts });
+          clippingSources.push({ video, parts, episodeNumber });
         }
 
         const totalPartCount = clippingSources.reduce(
@@ -131,13 +132,14 @@ async function runClipping(
         const clippingControllers: ClippingController[] = [];
         let progressTimer: ReturnType<typeof setInterval> | null = null;
         try {
-          for (const { video, parts } of clippingSources) {
+          for (const { video, parts, episodeNumber } of clippingSources) {
             clippingControllers.push(
               await startClipping(
                 buildScboyClippingPlan(
                   video,
                   parts,
                   llmModel,
+                  episodeNumber,
                   runOptions,
                   OUTPUT_ROOT,
                 ),
@@ -164,10 +166,7 @@ async function runClipping(
               return [];
             }
             const video = clippingSources[index]!.video;
-            const episodeNumber = episodeNumbers.get(video.bvid);
-            if (episodeNumber === undefined) {
-              throw new Error(`Missing episode number for ${video.bvid}`);
-            }
+            const episodeNumber = clippingSources[index]!.episodeNumber;
             return [
               {
                 video,

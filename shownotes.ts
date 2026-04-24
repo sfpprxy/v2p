@@ -6,18 +6,34 @@ export interface OfftopicPart {
   page: number;
   offtopicAudioPath: string;
   relativeSegmentsPath: string;
+  segmentPromptHash: string;
 }
 
 export interface ProcessedPartOfftopic extends OfftopicPart {}
 
+export interface MergedOfftopicShownotesContext {
+  generatedAt: Date;
+  seasonNumber: string;
+  episodeNumber: string;
+}
+
 export async function buildMergedOfftopicShownotes(
   parts: readonly OfftopicPart[],
+  context: MergedOfftopicShownotesContext,
 ): Promise<string[]> {
   return profileSpan(
     "buildMergedOfftopicShownotes",
     { partCount: parts.length },
     async (span) => {
-      const shownotes: string[] = [];
+      const promptHash = parts[0]!.segmentPromptHash.replace(/^sha256:/u, "");
+      if (!/^[0-9a-f]{64}$/u.test(promptHash)) {
+        throw new Error(`Invalid segment prompt hash: ${parts[0]!.segmentPromptHash}`);
+      }
+      const generatedAt = `${String(context.generatedAt.getMonth() + 1).padStart(2, "0")}-${String(context.generatedAt.getDate()).padStart(2, "0")} ${String(context.generatedAt.getHours()).padStart(2, "0")}:${String(context.generatedAt.getMinutes()).padStart(2, "0")}`;
+      const shownotes: string[] = [
+        `prompt hash: ${promptHash.slice(0, 6)}, ${generatedAt}`,
+        `${context.seasonNumber} ${context.episodeNumber}`,
+      ];
       let currentStartMilliseconds = 0;
 
       for (const part of parts) {
