@@ -22,6 +22,8 @@ export interface ProgressDisplayOptions {
 export interface ProgressItem {
   rank: number;
   isComplete: boolean;
+  value: number;
+  total: number;
   completedMs: number | null;
   completedVisibleMs: number | null;
   payload: ProgressPayload;
@@ -99,9 +101,7 @@ export function updateProgressBars(
       itemBar.update(0, { ...progressDisplay.emptyPayload });
       continue;
     }
-    itemBar.update(
-      visibleItem.item.isComplete ? 1 : 0,
-      visibleItem.item.payload,
-    );
+    itemBar.setTotal(visibleItem.item.total);
+    itemBar.update(visibleItem.item.value, visibleItem.item.payload);
   }
 }

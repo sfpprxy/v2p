@@ -119,12 +119,13 @@ export async function startClipping(
             runLlmOrdered,
             plan.llmModel,
             plan.clippingOptions,
-            (attemptCount, maxAttempts) => {
+            (statusLabel, attemptCount, maxAttempts) => {
               updateState(
                 reduceClippingState(controller.getState(), {
-                  type: "partAttemptStarted",
+                  type: "partProgressStarted",
                   partIndex,
                   startedMs: performance.now(),
+                  statusLabel,
                   attemptCount,
                   maxAttempts,
                 }),
@@ -286,7 +287,11 @@ async function clipPart(
   runLlmOrdered: OrderedTaskRunner<number>,
   llmModel: string,
   clippingOptions: ClippingOptions,
-  onPartAttemptStarted: (attemptCount: number, maxAttempts: number) => void,
+  onPartProgressStarted: (
+    statusLabel: string,
+    attemptCount: number | null,
+    maxAttempts: number | null,
+  ) => void,
 ): Promise<ClipPartResult> {
   return profileSpan(
     "clipPart",
@@ -323,6 +328,7 @@ async function clipPart(
       }
 
       try {
+        onPartProgressStarted("下载字幕", null, null);
         const subtitlePath = await downloadSubtitle(part, outputDir);
         const segmentJsonPath = buildSegmentJsonPath(subtitlePath, ".segments");
         const relativeSegmentsPath = buildSegmentJsonPath(
@@ -349,16 +355,20 @@ async function clipPart(
               {
                 maxAttempts: 3,
                 decide: () => "retry",
-                onAttemptStarted: onPartAttemptStarted,
+                onAttemptStarted: (attemptCount, maxAttempts) => {
+                  onPartProgressStarted("LLM提取", attemptCount, maxAttempts);
+                },
               },
             ),
           ),
-          runAudioDownloadOrdered(part.page, () =>
-            downloadAudio(part, client, outputDir),
-          ),
+          runAudioDownloadOrdered(part.page, () => {
+            onPartProgressStarted("下载音频", null, null);
+            return downloadAudio(part, client, outputDir);
+          }),
         ]);
         const { segments, fixes, metadata } = segmentResult.value;
         span.set({ segmentCount: segments.length });
+        onPartProgressStarted("裁剪音频", null, null);
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
           audioPath,

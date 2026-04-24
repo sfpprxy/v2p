@@ -5,10 +5,9 @@ import {
   summarizeClipPartResults,
 } from "./workflow_report";
 
-export type ClippingPartProgressStatus =
+export type ClippingPartProgressPhase =
   | "pending"
-  | "running"
-  | "retrying"
+  | "active"
   | "ok"
   | "skipped"
   | "error";
@@ -16,7 +15,8 @@ export type ClippingPartProgressStatus =
 export interface ClippingPartProgressState {
   page: number;
   title: string;
-  status: ClippingPartProgressStatus;
+  phase: ClippingPartProgressPhase;
+  statusLabel: string | null;
   attemptCount: number | null;
   maxAttempts: number | null;
   startedMs: number | null;
@@ -44,11 +44,12 @@ export interface ClippingState {
 
 export type ClippingEvent =
   | {
-      type: "partAttemptStarted";
+      type: "partProgressStarted";
       partIndex: number;
       startedMs: number;
-      attemptCount: number;
-      maxAttempts: number;
+      statusLabel: string;
+      attemptCount: number | null;
+      maxAttempts: number | null;
     }
   | {
       type: "partSucceeded";
@@ -80,7 +81,8 @@ export function createClippingState(
       progress: {
         page: part.page,
         title: part.title,
-        status: "pending",
+        phase: "pending",
+        statusLabel: null,
         attemptCount: null,
         maxAttempts: null,
         startedMs: null,
@@ -98,7 +100,7 @@ export function reduceClippingState(
   event: ClippingEvent,
 ): ClippingState {
   switch (event.type) {
-    case "partAttemptStarted":
+    case "partProgressStarted":
       return {
         ...state,
         partStates: state.partStates.map((partState, index) =>
@@ -108,7 +110,8 @@ export function reduceClippingState(
                 ...partState,
                 progress: {
                   ...partState.progress,
-                  status: event.attemptCount === 1 ? "running" : "retrying",
+                  phase: "active",
+                  statusLabel: event.statusLabel,
                   attemptCount: event.attemptCount,
                   maxAttempts: event.maxAttempts,
                   startedMs: partState.progress.startedMs ?? event.startedMs,
@@ -132,7 +135,8 @@ export function reduceClippingState(
                 } satisfies PromiseFulfilledResult<ClipPartResult>,
                 progress: {
                   ...partState.progress,
-                  status: event.result.report.status,
+                  phase: event.result.report.status,
+                  statusLabel: null,
                   attemptCount: event.attemptCount,
                   completedMs: event.completedMs,
                   processingTime: event.result.report.processingTime,
@@ -154,7 +158,8 @@ export function reduceClippingState(
                 } satisfies PromiseRejectedResult,
                 progress: {
                   ...partState.progress,
-                  status: "error",
+                  phase: "error",
+                  statusLabel: null,
                   attemptCount: event.attemptCount,
                   completedMs: event.completedMs,
                   processingTime: formatProcessingTime(

@@ -89,7 +89,35 @@ export interface PodcastStageInput {
 
 export interface PodcastStageOptions {
   forceUpload: boolean;
+  onProgress?: (event: PodcastStageProgressEvent) => void;
 }
+
+export type PodcastStageProgressEvent =
+  | {
+      type: "episodeStarted";
+      index: number;
+      title: string;
+      audioBytes: number;
+    }
+  | {
+      type: "audioUploadProgress";
+      index: number;
+      uploadedBytes: number;
+      totalBytes: number;
+    }
+  | {
+      type: "episodeSkipped";
+      index: number;
+      title: string;
+    }
+  | {
+      type: "episodeSucceeded";
+      index: number;
+    }
+  | {
+      type: "episodeFailed";
+      index: number;
+    };
 
 interface SourceEpisode {
   id: string;
@@ -141,37 +169,71 @@ export async function stageEpisodes(
   const config = loadPodcastConfig();
   let uploadEnvironment: PodcastUploadCredentials | null = null;
 
-  for (const stageInput of stageInputs) {
+  for (const [index, stageInput] of stageInputs.entries()) {
     const sourceEpisode = await readSourceEpisode(
       stageInput,
       config.guidPrefix,
       config.defaultPublishTime,
     );
-    const existingManifest = readExistingEpisodeManifest(sourceEpisode);
-    if (
-      existingManifest !== null &&
-      existingManifest.source.bvid !== sourceEpisode.source.bvid
-    ) {
-      throw new Error(
-        `Podcast episode ${sourceEpisode.id} already belongs to ${existingManifest.source.bvid}, cannot overwrite with ${sourceEpisode.source.bvid}`,
-      );
-    }
-    if (
-      !options.forceUpload &&
-      existingManifest !== null &&
-      JSON.stringify(
-        buildEpisodeManifest(sourceEpisode, existingManifest.audioUrl),
-      ) === JSON.stringify(existingManifest)
-    ) {
-      console.log(`Podcast unchanged ${sourceEpisode.id}`);
-      continue;
-    }
+    options.onProgress?.({
+      type: "episodeStarted",
+      index,
+      title: sourceEpisode.title,
+      audioBytes: sourceEpisode.audioBytes,
+    });
+    try {
+      const existingManifest = readExistingEpisodeManifest(sourceEpisode);
+      if (
+        existingManifest !== null &&
+        existingManifest.source.bvid !== sourceEpisode.source.bvid
+      ) {
+        throw new Error(
+          `Podcast episode ${sourceEpisode.id} already belongs to ${existingManifest.source.bvid}, cannot overwrite with ${sourceEpisode.source.bvid}`,
+        );
+      }
+      if (
+        !options.forceUpload &&
+        existingManifest !== null &&
+        JSON.stringify(
+          buildEpisodeManifest(sourceEpisode, existingManifest.audioUrl),
+        ) === JSON.stringify(existingManifest)
+      ) {
+        options.onProgress?.({
+          type: "episodeSkipped",
+          index,
+          title: sourceEpisode.title,
+        });
+        console.log(`Podcast unchanged ${sourceEpisode.id}`);
+        continue;
+      }
 
-    uploadEnvironment ??= await loadPodcastUploadEnvironment();
-    const audioUrl = await uploadEpisodeAudio(sourceEpisode, uploadEnvironment);
-    const episodeManifest = buildEpisodeManifest(sourceEpisode, audioUrl);
-    writeEpisodeManifest(episodeManifest);
-    console.log(`Staged ${episodeManifest.id}`);
+      uploadEnvironment ??= await loadPodcastUploadEnvironment();
+      const audioUrl = await uploadEpisodeAudio(
+        sourceEpisode,
+        uploadEnvironment,
+        (uploadedBytes, totalBytes) => {
+          options.onProgress?.({
+            type: "audioUploadProgress",
+            index,
+            uploadedBytes,
+            totalBytes,
+          });
+        },
+      );
+      const episodeManifest = buildEpisodeManifest(sourceEpisode, audioUrl);
+      writeEpisodeManifest(episodeManifest);
+      options.onProgress?.({
+        type: "episodeSucceeded",
+        index,
+      });
+      console.log(`Staged ${episodeManifest.id}`);
+    } catch (error) {
+      options.onProgress?.({
+        type: "episodeFailed",
+        index,
+      });
+      throw error;
+    }
   }
 
   buildPodcastSite(config, loadEpisodeManifests());
@@ -377,6 +439,7 @@ async function readSourceEpisode(
 async function uploadEpisodeAudio(
   sourceEpisode: SourceEpisode,
   uploadEnvironment: PodcastUploadCredentials,
+  onProgress: (uploadedBytes: number, totalBytes: number) => void = () => {},
 ): Promise<string> {
   const audioPath = resolve(
     PROJECT_ROOT,
@@ -390,9 +453,30 @@ async function uploadEpisodeAudio(
     endpoint: `https://${uploadEnvironment.PODCAST_R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
   });
 
-  await bucket.write(sourceEpisode.source.objectKey, Bun.file(audioPath), {
+  const audioFile = Bun.file(audioPath);
+  const writer = bucket.file(sourceEpisode.source.objectKey).writer({
     type: sourceEpisode.audioType,
   });
+  let uploadedBytes = 0;
+  onProgress(uploadedBytes, sourceEpisode.audioBytes);
+
+  try {
+    const reader = audioFile.stream().getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunk = value;
+      await writer.write(chunk);
+      uploadedBytes += chunk.byteLength;
+      onProgress(uploadedBytes, sourceEpisode.audioBytes);
+    }
+    await writer.end();
+  } catch (error) {
+    await writer.end(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
 
   return joinPublicUrl(
     uploadEnvironment.PODCAST_R2_PUBLIC_BASE_URL,

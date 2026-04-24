@@ -212,25 +212,30 @@ function buildWorkflowProgressItems(
   for (const state of states) {
     for (const part of state.partProgressStates) {
       const processingTime =
-        part.status === "running" || part.status === "retrying"
+        part.phase === "active"
           ? formatProcessingTime(now - (part.startedMs ?? 0))
           : (part.processingTime ?? "-");
       let rank: number;
       let status: string;
-      switch (part.status) {
+      switch (part.phase) {
         case "error":
           rank = 0;
           status = chalk.red("error");
           break;
-        case "retrying":
-          rank = 1;
-          status = chalk.yellow(
-            `retrying ${part.attemptCount}/${part.maxAttempts}`,
-          );
-          break;
-        case "running":
+        case "active":
           rank = 2;
-          status = chalk.yellow("running");
+          if (part.statusLabel === null) {
+            throw new Error(
+              `Active part progress is missing status label for P${part.page}`,
+            );
+          }
+          status = chalk.yellow(
+            part.attemptCount !== null &&
+              part.maxAttempts !== null &&
+              part.attemptCount > 1
+              ? `${part.statusLabel} 重试 ${part.attemptCount}/${part.maxAttempts}`
+              : part.statusLabel,
+          );
           break;
         case "skipped":
           rank = 3;
@@ -248,12 +253,13 @@ function buildWorkflowProgressItems(
       progressItems.push({
         rank,
         isComplete:
-          part.status !== "pending" &&
-          part.status !== "running" &&
-          part.status !== "retrying",
+          part.phase !== "pending" &&
+          part.phase !== "active",
+        value: part.phase === "pending" || part.phase === "active" ? 0 : 1,
+        total: 1,
         completedMs: part.completedMs,
         completedVisibleMs:
-          part.status === "ok" || part.status === "skipped"
+          part.phase === "ok" || part.phase === "skipped"
             ? FINISHED_CLIPPING_PART_PROGRESS_VISIBLE_MS
             : null,
         payload: {
@@ -319,10 +325,205 @@ if (import.meta.main) {
     dateArgs.length === 0 ? null : dateArgs,
   );
   const podcastStageInputs = buildScboyPodcastStageInputs(clippingResults);
-  await stageEpisodes(podcastStageInputs, {
+  await stagePodcastEpisodesWithProgress(podcastStageInputs, {
     forceUpload: runOptions.forcePodcastUpload,
   });
   await publishPodcastRelease(podcastStageInputs);
+}
+
+interface PodcastStageProgressItemState {
+  label: string;
+  title: string;
+  phase: "pending" | "active" | "ok" | "skipped" | "error";
+  statusLabel: string | null;
+  startedMs: number | null;
+  completedMs: number | null;
+  uploadedBytes: number;
+  totalBytes: number;
+  processingTime: string | null;
+}
+
+async function stagePodcastEpisodesWithProgress(
+  podcastStageInputs: readonly { outputDirectory: string; episodeNumber: string }[],
+  options: { forceUpload: boolean },
+): Promise<void> {
+  if (podcastStageInputs.length === 0) {
+    await stageEpisodes(podcastStageInputs, options);
+    return;
+  }
+
+  const progressDisplay = createProgressDisplay(
+    podcastStageInputs.length,
+    "podcast audio",
+    {
+      totalLabel: "upload",
+      itemFormat: "{label} {bar} {percentage}% {status} {processingTime} {title}",
+      emptyPayload: {
+        label: "",
+        status: "",
+        processingTime: "",
+        title: "",
+      },
+    },
+  );
+  const stageProgressItems: PodcastStageProgressItemState[] =
+    podcastStageInputs.map((stageInput) => ({
+      label: stageInput.episodeNumber,
+      title: "",
+      phase: "pending",
+      statusLabel: null,
+      startedMs: null,
+      completedMs: null,
+      uploadedBytes: 0,
+      totalBytes: 1,
+      processingTime: null,
+    }));
+  let progressTimer: ReturnType<typeof setInterval> | null = null;
+  try {
+    progressTimer = setInterval(() => {
+      updatePodcastStageProgress(progressDisplay, stageProgressItems);
+    }, 100);
+    updatePodcastStageProgress(progressDisplay, stageProgressItems);
+    await stageEpisodes(podcastStageInputs, {
+      ...options,
+      onProgress: (event) => {
+        const item = stageProgressItems[event.index];
+        if (item === undefined) {
+          throw new Error(`Unknown podcast stage progress index: ${event.index}`);
+        }
+        switch (event.type) {
+          case "episodeStarted":
+            item.title = event.title;
+            item.phase = "active";
+            item.statusLabel = "准备上传";
+            item.startedMs = performance.now();
+            item.completedMs = null;
+            item.uploadedBytes = 0;
+            item.totalBytes = event.audioBytes;
+            item.processingTime = null;
+            break;
+          case "audioUploadProgress":
+            item.phase = "active";
+            item.statusLabel = "上传音频";
+            item.uploadedBytes = event.uploadedBytes;
+            item.totalBytes = event.totalBytes;
+            break;
+          case "episodeSkipped":
+            item.title = event.title;
+            item.phase = "skipped";
+            item.statusLabel = null;
+            item.completedMs = performance.now();
+            item.uploadedBytes = item.totalBytes;
+            item.processingTime = formatProcessingTime(
+              item.completedMs - (item.startedMs ?? item.completedMs),
+            );
+            progressDisplay.totalBar.increment();
+            break;
+          case "episodeSucceeded":
+            item.phase = "ok";
+            item.statusLabel = null;
+            item.completedMs = performance.now();
+            item.uploadedBytes = item.totalBytes;
+            item.processingTime = formatProcessingTime(
+              item.completedMs - (item.startedMs ?? item.completedMs),
+            );
+            progressDisplay.totalBar.increment();
+            break;
+          case "episodeFailed":
+            item.phase = "error";
+            item.statusLabel = null;
+            item.completedMs = performance.now();
+            item.processingTime = formatProcessingTime(
+              item.completedMs - (item.startedMs ?? item.completedMs),
+            );
+            progressDisplay.totalBar.increment();
+            break;
+        }
+      },
+    });
+  } finally {
+    if (progressTimer !== null) {
+      clearInterval(progressTimer);
+    }
+    updatePodcastStageProgress(progressDisplay, stageProgressItems);
+    for (const itemBar of progressDisplay.itemBars.toReversed()) {
+      progressDisplay.multibar.remove(itemBar);
+    }
+    progressDisplay.multibar.stop();
+  }
+}
+
+function updatePodcastStageProgress(
+  progressDisplay: ProgressDisplay,
+  stageProgressItems: readonly PodcastStageProgressItemState[],
+): void {
+  const now = performance.now();
+  updateProgressBars(
+    progressDisplay,
+    stageProgressItems.map((item) => {
+      const processingTime =
+        item.phase === "active"
+          ? formatProcessingTime(now - (item.startedMs ?? now))
+          : (item.processingTime ?? "-");
+      let rank: number;
+      let status: string;
+      switch (item.phase) {
+        case "error":
+          rank = 0;
+          status = chalk.red("error");
+          break;
+        case "active":
+          rank = 1;
+          if (item.statusLabel === null) {
+            throw new Error(
+              `Active podcast stage progress is missing status label for ${item.label}`,
+            );
+          }
+          status = chalk.yellow(
+            item.statusLabel === "上传音频"
+              ? [
+                  item.statusLabel,
+                  `${(item.uploadedBytes / 1024 / 1024).toFixed(1)}MB/${(
+                    item.totalBytes /
+                    1024 /
+                    1024
+                  ).toFixed(1)}MB`,
+                ].join(" ")
+              : item.statusLabel,
+          );
+          break;
+        case "skipped":
+          rank = 2;
+          status = chalk.gray("skipped");
+          break;
+        case "ok":
+          rank = 3;
+          status = chalk.green("done");
+          break;
+        case "pending":
+          rank = 4;
+          status = chalk.dim("pending");
+          break;
+      }
+      return {
+        rank,
+        isComplete: item.phase !== "pending" && item.phase !== "active",
+        value: item.uploadedBytes,
+        total: item.totalBytes,
+        completedMs: item.completedMs,
+        completedVisibleMs:
+          item.phase === "ok" || item.phase === "skipped"
+            ? FINISHED_CLIPPING_PART_PROGRESS_VISIBLE_MS
+            : null,
+        payload: {
+          label: chalk.dim(item.label),
+          status,
+          processingTime: chalk.dim(processingTime),
+          title: item.title,
+        },
+      } satisfies ProgressItem;
+    }),
+  );
 }
 
 async function publishPodcastRelease(
