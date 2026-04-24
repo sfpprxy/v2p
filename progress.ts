@@ -62,11 +62,11 @@ export function createProgressDisplay(
         ),
       },
       () =>
-        multibar.create(1, 0, options.emptyPayload, {
+        multibar.create(1, 0, { ...options.emptyPayload }, {
           format: options.itemFormat,
         }),
     ),
-    emptyPayload: options.emptyPayload,
+    emptyPayload: { ...options.emptyPayload },
   };
 }
 
@@ -96,7 +96,7 @@ export function updateProgressBars(
   for (const [index, itemBar] of progressDisplay.itemBars.entries()) {
     const visibleItem = visibleItems[index];
     if (visibleItem === undefined) {
-      itemBar.update(0, progressDisplay.emptyPayload);
+      itemBar.update(0, { ...progressDisplay.emptyPayload });
       continue;
     }
     itemBar.update(
