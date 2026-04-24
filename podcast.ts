@@ -386,6 +386,14 @@ async function readSourceEpisode(
   const audioPath = resolve(resolvedOutputDirectory, audioFileName);
   const shownotesPath = resolve(resolvedOutputDirectory, shownotesFileName);
   const bvid = audioFileName.slice(0, -AUDIO_FILE_SUFFIX.length);
+  const shownotesText = readFileSync(shownotesPath, "utf8");
+  const promptHashMatch = shownotesText.match(
+    /^prompt hash: ([0-9a-f]{6}(?:[0-9a-f]{58})?)(?:,|$)/u,
+  );
+  if (promptHashMatch === null) {
+    throw new Error(`Missing prompt hash in shownotes: ${shownotesFileName}`);
+  }
+  const promptHash = promptHashMatch[1]!;
   const sequenceMatch = stageInput.episodeNumber.match(/^\d{4}-(\d+)$/u);
   if (sequenceMatch === null) {
     throw new Error(`Invalid episode number: ${stageInput.episodeNumber}`);
@@ -419,7 +427,7 @@ async function readSourceEpisode(
     id: `${outputYear}-${stageInput.episodeNumber}`,
     guid: `${guidPrefix}:${outputYear}:${month}${day}:${bvid}`,
     title,
-    description: readFileSync(shownotesPath, "utf8"),
+    description: shownotesText,
     publishedAt: `${localPublishDate.toISOString().slice(0, 19)}${publishOffset}`,
     seasonNumber: outputYear,
     episodeNumber: stageInput.episodeNumber,
@@ -431,7 +439,7 @@ async function readSourceEpisode(
       audioFileName,
       shownotesFileName,
       bvid,
-      objectKey: `episodes/${outputYear}/${month}${day}-${bvid}${extname(audioPath)}`,
+      objectKey: `episodes/${outputYear}/${month}${day}-${bvid}-${promptHash}${extname(audioPath)}`,
     },
   };
 }
