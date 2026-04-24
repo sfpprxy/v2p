@@ -2,51 +2,61 @@ import { mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { $ } from "bun";
+import chalk from "chalk";
 import { buildBiliClient } from "./bili_utils";
 import { BiliVideo, BiliVideoPart } from "./bili_video";
 import { getProfileOutputPath, profileSpan } from "./perf";
 import { stageEpisodes } from "./podcast";
 import {
-  createWorkflowProgressDisplay,
-  updateWorkflowProgressBars,
-} from "./workflow_progress";
+  createProgressDisplay,
+  updateProgressBars,
+  type ProgressDisplay,
+  type ProgressItem,
+} from "./progress";
 import {
   buildScboyPodcastStageInputs,
   buildScboyEpisodeNumbers,
-  buildScboyVideoExecutionPlan,
-  filterScboyProcessableVideos,
-  type ScboyProcessedVideo,
-} from "./scboy_video_plan";
+  buildScboyClippingPlan,
+  filterScboyClippableVideos,
+  type ScboyClippingResult,
+} from "./scboy_clipping";
 import {
-  getWorkflowProgressState,
-  startVideoExecution,
-  type VideoExecutionController,
-} from "./workflow_executor";
-import type { WorkflowRunOptions } from "./workflow_plan";
+  getClippingProgressState,
+  startClipping,
+  type ClippingController,
+} from "./clipping";
 import { DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL } from "./llm";
-import { runWithRetry } from "./workflow_retry";
+import { runWithRetry } from "./retry";
 import {
-  buildWorkflowReportError,
-  updateVideoReportPublishStatus,
+  buildReportError,
+  formatProcessingTime,
+  updateClippingReportPublishStatus,
 } from "./workflow_report";
+import type { ClippingProgressState } from "./clipping_state";
 import { ScboyVideoStore, isDateValue } from "./scboy_video_store";
 
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
 const PODCAST_RELEASE_PATHS = ["podcast/episodes"];
+const FINISHED_CLIPPING_PART_PROGRESS_VISIBLE_MS = 2000;
 
-interface VideoWithParts {
+interface ClippingSource {
   video: BiliVideo;
   parts: readonly BiliVideoPart[];
 }
 
-async function processVideos(
+interface WorkflowRunOptions {
+  segmentExtraction: "reuse-existing" | "regenerate";
+  forcePodcastUpload: boolean;
+}
+
+async function runClipping(
   llmModel: string,
   runOptions: WorkflowRunOptions,
   dateInTitle?: string | [string, string] | string[] | null,
-): Promise<ScboyProcessedVideo[]> {
+): Promise<ScboyClippingResult[]> {
   return profileSpan(
-    "processVideos",
+    "runClipping",
     {
       llmModel,
       segmentExtraction: runOptions.segmentExtraction,
@@ -66,10 +76,10 @@ async function processVideos(
       const store = ScboyVideoStore.open();
       try {
         const listedVideos = store.listVideos(dateInTitle);
-        const videos = filterScboyProcessableVideos(listedVideos);
+        const videos = filterScboyClippableVideos(listedVideos);
         if (listedVideos.length !== videos.length) {
           console.log(
-            `[processVideos:skip] ignored ${listedVideos.length - videos.length} videos without processable title prefix`,
+            `[runClipping:skip] ignored ${listedVideos.length - videos.length} videos without processable title prefix`,
           );
         }
         span.set({
@@ -78,7 +88,7 @@ async function processVideos(
         });
         const episodeNumbers = buildScboyEpisodeNumbers(videos);
 
-        const videosWithParts: VideoWithParts[] = [];
+        const clippingSources: ClippingSource[] = [];
         for (const video of videos) {
           const parts = await profileSpan(
             "video.getParts",
@@ -89,30 +99,42 @@ async function processVideos(
               return videoParts;
             },
           );
-          videosWithParts.push({ video, parts });
+          clippingSources.push({ video, parts });
         }
 
-        const totalPartCount = videosWithParts.reduce(
+        const totalPartCount = clippingSources.reduce(
           (sum, { parts }) => sum + parts.length,
           0,
         );
         span.set({ partCount: totalPartCount });
 
         const totalProgressTitle =
-          videosWithParts.length === 1
-            ? videosWithParts[0]!.video.title
-            : `${videosWithParts.length} videos`;
-        const progressDisplay = createWorkflowProgressDisplay(
+          clippingSources.length === 1
+            ? clippingSources[0]!.video.title
+            : `${clippingSources.length} videos`;
+        const progressDisplay = createProgressDisplay(
           totalPartCount,
           totalProgressTitle,
+          {
+            totalLabel: "parts",
+            itemFormat:
+              "{videoTitle} {label} {status} {processingTime} {title}",
+            emptyPayload: {
+              videoTitle: "",
+              label: "",
+              status: "",
+              processingTime: "",
+              title: "",
+            },
+          },
         );
-        const videoExecutions: VideoExecutionController[] = [];
+        const clippingControllers: ClippingController[] = [];
         let progressTimer: ReturnType<typeof setInterval> | null = null;
         try {
-          for (const { video, parts } of videosWithParts) {
-            videoExecutions.push(
-              await startVideoExecution(
-                buildScboyVideoExecutionPlan(
+          for (const { video, parts } of clippingSources) {
+            clippingControllers.push(
+              await startClipping(
+                buildScboyClippingPlan(
                   video,
                   parts,
                   llmModel,
@@ -125,29 +147,23 @@ async function processVideos(
             );
           }
           progressTimer = setInterval(() => {
-            updateWorkflowProgressBars(
-              progressDisplay,
-              videoExecutions.map(getWorkflowProgressState),
-            );
+            updateWorkflowProgress(progressDisplay, clippingControllers);
           }, 100);
-          updateWorkflowProgressBars(
-            progressDisplay,
-            videoExecutions.map(getWorkflowProgressState),
+          updateWorkflowProgress(progressDisplay, clippingControllers);
+          const finalizedClippingResults = await Promise.allSettled(
+            clippingControllers.map((controller) => controller.completionPromise),
           );
-          const finalizedVideoResults = await Promise.allSettled(
-            videoExecutions.map((execution) => execution.completionPromise),
-          );
-          const firstFailedFinalizeResult = finalizedVideoResults.find(
+          const firstFailedClippingResult = finalizedClippingResults.find(
             (result): result is PromiseRejectedResult => result.status === "rejected",
           );
-          if (firstFailedFinalizeResult !== undefined) {
-            throw firstFailedFinalizeResult.reason;
+          if (firstFailedClippingResult !== undefined) {
+            throw firstFailedClippingResult.reason;
           }
-          return finalizedVideoResults.flatMap((result, index) => {
+          return finalizedClippingResults.flatMap((result, index) => {
             if (result.status !== "fulfilled" || result.value === null) {
               return [];
             }
-            const video = videosWithParts[index]!.video;
+            const video = clippingSources[index]!.video;
             const episodeNumber = episodeNumbers.get(video.bvid);
             if (episodeNumber === undefined) {
               throw new Error(`Missing episode number for ${video.bvid}`);
@@ -164,12 +180,9 @@ async function processVideos(
           if (progressTimer !== null) {
             clearInterval(progressTimer);
           }
-          updateWorkflowProgressBars(
-            progressDisplay,
-            videoExecutions.map(getWorkflowProgressState),
-          );
-          for (const partBar of progressDisplay.partBars.toReversed()) {
-            progressDisplay.multibar.remove(partBar);
+          updateWorkflowProgress(progressDisplay, clippingControllers);
+          for (const itemBar of progressDisplay.itemBars.toReversed()) {
+            progressDisplay.multibar.remove(itemBar);
           }
           progressDisplay.multibar.stop();
         }
@@ -178,6 +191,83 @@ async function processVideos(
       }
     },
   );
+}
+
+function updateWorkflowProgress(
+  progressDisplay: ProgressDisplay,
+  clippingControllers: readonly ClippingController[],
+): void {
+  updateProgressBars(
+    progressDisplay,
+    buildWorkflowProgressItems(
+      clippingControllers.map(getClippingProgressState),
+    ),
+  );
+}
+
+function buildWorkflowProgressItems(
+  states: readonly ClippingProgressState[],
+): ProgressItem[] {
+  const now = performance.now();
+  const progressItems: ProgressItem[] = [];
+  for (const state of states) {
+    for (const part of state.partProgressStates) {
+      const processingTime =
+        part.status === "running" || part.status === "retrying"
+          ? formatProcessingTime(now - (part.startedMs ?? 0))
+          : (part.processingTime ?? "-");
+      let rank: number;
+      let status: string;
+      switch (part.status) {
+        case "error":
+          rank = 0;
+          status = chalk.red("error");
+          break;
+        case "retrying":
+          rank = 1;
+          status = chalk.yellow(
+            `retrying ${part.attemptCount}/${part.maxAttempts}`,
+          );
+          break;
+        case "running":
+          rank = 2;
+          status = chalk.yellow("running");
+          break;
+        case "skipped":
+          rank = 3;
+          status = chalk.gray("skipped");
+          break;
+        case "ok":
+          rank = 4;
+          status = chalk.green("done");
+          break;
+        case "pending":
+          rank = 5;
+          status = chalk.dim("pending");
+          break;
+      }
+      progressItems.push({
+        rank,
+        isComplete:
+          part.status !== "pending" &&
+          part.status !== "running" &&
+          part.status !== "retrying",
+        completedMs: part.completedMs,
+        completedVisibleMs:
+          part.status === "ok" || part.status === "skipped"
+            ? FINISHED_CLIPPING_PART_PROGRESS_VISIBLE_MS
+            : null,
+        payload: {
+          videoTitle: chalk.dim(`[${state.progressTitle}]`),
+          label: chalk.dim(`P${part.page}`),
+          status,
+          processingTime: chalk.dim(processingTime),
+          title: part.title,
+        },
+      });
+    }
+  }
+  return progressItems;
 }
 
 if (import.meta.main) {
@@ -224,12 +314,12 @@ if (import.meta.main) {
       throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
   }
 
-  const processedVideos = await processVideos(
+  const clippingResults = await runClipping(
     llmModel,
     runOptions,
     dateArgs.length === 0 ? null : dateArgs,
   );
-  const podcastStageInputs = buildScboyPodcastStageInputs(processedVideos);
+  const podcastStageInputs = buildScboyPodcastStageInputs(clippingResults);
   await stageEpisodes(podcastStageInputs, {
     forceUpload: runOptions.forcePodcastUpload,
   });
@@ -349,7 +439,7 @@ async function publishPodcastRelease(
     await updatePublishStatusForOutputDirectories(podcastStageInputs, {
       status: "error",
       attemptCount,
-      error: buildWorkflowReportError(publishError),
+      error: buildReportError(publishError),
     });
     throw publishError;
   }
@@ -390,18 +480,18 @@ async function updatePublishStatusForOutputDirectories(
     | {
         status: "error";
         attemptCount: number;
-        error: ReturnType<typeof buildWorkflowReportError>;
+        error: ReturnType<typeof buildReportError>;
       },
 ): Promise<void> {
   for (const { outputDirectory } of podcastStageInputs) {
-    await updateVideoReportPublishStatus(
-      findVideoReportPath(outputDirectory),
+    await updateClippingReportPublishStatus(
+      findClippingReportPath(outputDirectory),
       publish,
     );
   }
 }
 
-function findVideoReportPath(outputDirectory: string): string {
+function findClippingReportPath(outputDirectory: string): string {
   const reportFilenames = readdirSync(outputDirectory).filter((filename) =>
     filename.endsWith(".report.json"),
   );

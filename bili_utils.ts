@@ -145,7 +145,7 @@ export function buildBiliCookie(): BiliCookieMap | null {
 }
 
 export function buildBiliPartFileStem(part: BiliVideoPart): string {
-  return `${part.bvid}_${part.tittle}`;
+  return `${part.bvid}_${part.title}`;
 }
 
 export function parseRawCookie(rawCookie: string): BiliCookieMap {

@@ -2,44 +2,43 @@ import { resolve } from "node:path";
 
 import type { BiliVideo, BiliVideoPart } from "./bili_video";
 
-export interface VideoOutputContext {
+export interface ClippingOutputContext {
   outputDir: string;
   reportPath: string;
 }
 
-export interface WorkflowRunOptions {
+export interface ClippingOptions {
   segmentExtraction: "reuse-existing" | "regenerate";
-  forcePodcastUpload: boolean;
 }
 
-export interface VideoExecutionPlan extends VideoOutputContext {
+export interface ClippingPlan extends ClippingOutputContext {
   video: BiliVideo;
   parts: readonly BiliVideoPart[];
   llmModel: string;
-  runOptions: WorkflowRunOptions;
-  progressVideoTitle: string;
-  processablePartPages: readonly number[];
+  clippingOptions: ClippingOptions;
+  progressTitle: string;
+  clippablePartPages: readonly number[];
 }
 
-export function buildVideoExecutionPlan(
+export function buildClippingPlan(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
-  runOptions: WorkflowRunOptions,
+  clippingOptions: ClippingOptions,
   outputRoot: string,
   outputDirectoryName: string,
-  progressVideoTitle: string,
-): VideoExecutionPlan {
+  progressTitle: string,
+): ClippingPlan {
   const outputDir = resolve(outputRoot, outputDirectoryName);
   return {
     video,
     parts,
     llmModel,
-    runOptions,
+    clippingOptions,
     outputDir,
     reportPath: resolve(outputDir, `${video.bvid}.report.json`),
-    progressVideoTitle,
-    processablePartPages: parts
+    progressTitle,
+    clippablePartPages: parts
       .filter((part) => part.duration >= 10)
       .map((part) => part.page),
   };

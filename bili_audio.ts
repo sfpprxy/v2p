@@ -98,7 +98,7 @@ export async function downloadAudio(
     {
       bvid: videoPart.bvid,
       page: videoPart.page,
-      title: videoPart.tittle,
+      title: videoPart.title,
       outputPath,
     },
     async (span) => {

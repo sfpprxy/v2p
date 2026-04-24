@@ -1,28 +1,48 @@
-import type { ProcessPartResult } from "./workflow_report";
-import type { VideoExecutionPlan } from "./workflow_plan";
+import type { ClipPartResult } from "./workflow_report";
+import type { ClippingPlan } from "./clipping_plan";
 import {
   formatProcessingTime,
-  summarizeProcessedPartResults,
+  summarizeClipPartResults,
 } from "./workflow_report";
-import type {
-  VideoPartProgressState,
-  WorkflowProgressVideoState,
-} from "./workflow_progress";
 
-export interface VideoPartExecutionState {
+export type ClippingPartProgressStatus =
+  | "pending"
+  | "running"
+  | "retrying"
+  | "ok"
+  | "skipped"
+  | "error";
+
+export interface ClippingPartProgressState {
+  page: number;
+  title: string;
+  status: ClippingPartProgressStatus;
   attemptCount: number | null;
-  progress: VideoPartProgressState;
-  settledResult: PromiseSettledResult<ProcessPartResult> | null;
+  maxAttempts: number | null;
+  startedMs: number | null;
+  completedMs: number | null;
+  processingTime: string | null;
 }
 
-export interface VideoExecutionState {
-  plan: VideoExecutionPlan;
-  videoStartedMs: number;
-  partStates: VideoPartExecutionState[];
+export interface ClippingProgressState {
+  progressTitle: string;
+  partProgressStates: readonly ClippingPartProgressState[];
+}
+
+export interface ClippingPartState {
+  attemptCount: number | null;
+  progress: ClippingPartProgressState;
+  settledResult: PromiseSettledResult<ClipPartResult> | null;
+}
+
+export interface ClippingState {
+  plan: ClippingPlan;
+  clippingStartedMs: number;
+  partStates: ClippingPartState[];
   isFinalized: boolean;
 }
 
-export type VideoExecutionEvent =
+export type ClippingEvent =
   | {
       type: "partAttemptStarted";
       partIndex: number;
@@ -35,7 +55,7 @@ export type VideoExecutionEvent =
       partIndex: number;
       completedMs: number;
       attemptCount: number | null;
-      result: ProcessPartResult;
+      result: ClipPartResult;
     }
   | {
       type: "partFailed";
@@ -45,21 +65,21 @@ export type VideoExecutionEvent =
       error: unknown;
     }
   | {
-      type: "videoFinalized";
+      type: "clippingFinalized";
     };
 
-export function createVideoExecutionState(
-  plan: VideoExecutionPlan,
-  videoStartedMs: number,
-): VideoExecutionState {
+export function createClippingState(
+  plan: ClippingPlan,
+  clippingStartedMs: number,
+): ClippingState {
   return {
     plan,
-    videoStartedMs,
+    clippingStartedMs,
     partStates: plan.parts.map((part) => ({
       attemptCount: null,
       progress: {
         page: part.page,
-        title: part.tittle,
+        title: part.title,
         status: "pending",
         attemptCount: null,
         maxAttempts: null,
@@ -73,10 +93,10 @@ export function createVideoExecutionState(
   };
 }
 
-export function reduceVideoExecutionState(
-  state: VideoExecutionState,
-  event: VideoExecutionEvent,
-): VideoExecutionState {
+export function reduceClippingState(
+  state: ClippingState,
+  event: ClippingEvent,
+): ClippingState {
   switch (event.type) {
     case "partAttemptStarted":
       return {
@@ -109,7 +129,7 @@ export function reduceVideoExecutionState(
                 settledResult: {
                   status: "fulfilled",
                   value: event.result,
-                } satisfies PromiseFulfilledResult<ProcessPartResult>,
+                } satisfies PromiseFulfilledResult<ClipPartResult>,
                 progress: {
                   ...partState.progress,
                   status: event.result.report.status,
@@ -144,7 +164,7 @@ export function reduceVideoExecutionState(
               },
         ),
       };
-    case "videoFinalized":
+    case "clippingFinalized":
       return {
         ...state,
         isFinalized: true,
@@ -154,17 +174,17 @@ export function reduceVideoExecutionState(
   }
 }
 
-export function getWorkflowProgressVideoState(
-  state: VideoExecutionState,
-): WorkflowProgressVideoState {
+export function selectClippingProgressState(
+  state: ClippingState,
+): ClippingProgressState {
   return {
-    progressVideoTitle: state.plan.progressVideoTitle,
+    progressTitle: state.plan.progressTitle,
     partProgressStates: state.partStates.map(({ progress }) => progress),
   };
 }
 
-export function isVideoExecutionReadyForFinalize(
-  state: VideoExecutionState,
+export function isClippingReadyForFinalize(
+  state: ClippingState,
 ): boolean {
   return (
     !state.isFinalized &&
@@ -172,10 +192,10 @@ export function isVideoExecutionReadyForFinalize(
   );
 }
 
-export function summarizeVideoExecutionState(state: VideoExecutionState): ReturnType<
-  typeof summarizeProcessedPartResults
+export function summarizeClippingState(state: ClippingState): ReturnType<
+  typeof summarizeClipPartResults
 > {
-  return summarizeProcessedPartResults(
+  return summarizeClipPartResults(
     state.partStates.map((partState, index) => {
       if (partState.settledResult === null) {
         throw new Error(
@@ -186,7 +206,7 @@ export function summarizeVideoExecutionState(state: VideoExecutionState): Return
     }),
     state.plan.parts,
     state.partStates.map((partState) => partState.attemptCount),
-    state.videoStartedMs,
+    state.clippingStartedMs,
     state.plan.outputDir,
     state.plan.video.bvid,
   );

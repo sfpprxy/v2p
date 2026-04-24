@@ -19,7 +19,7 @@ export class BiliVideoPart {
     public readonly bvid: string,
     public readonly cid: number,
     public readonly page: number,
-    public readonly tittle: string,
+    public readonly title: string,
     public readonly duration: number,
   ) {}
 }

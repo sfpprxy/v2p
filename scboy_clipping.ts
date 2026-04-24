@@ -1,26 +1,26 @@
 import type { BiliVideo, BiliVideoPart } from "./bili_video";
 import type { PodcastStageInput } from "./podcast";
 import {
-  buildVideoExecutionPlan,
-  type VideoExecutionPlan,
-  type WorkflowRunOptions,
-} from "./workflow_plan";
+  buildClippingPlan,
+  type ClippingOptions,
+  type ClippingPlan,
+} from "./clipping_plan";
 
 const PROCESSABLE_VIDEO_TITLE_PREFIX = "【星际老男孩】";
 const TITLE_DATE_PATTERN = /(^|[^0-9])(\d{1,2})月(\d{1,2})(?:号|日)/u;
 
-export interface ScboyVideoWithParts {
+export interface ScboyClippingSource {
   video: BiliVideo;
   parts: readonly BiliVideoPart[];
 }
 
-export interface ScboyProcessedVideo {
+export interface ScboyClippingResult {
   video: BiliVideo;
   outputDir: string;
   episodeNumber: string;
 }
 
-export function filterScboyProcessableVideos(
+export function filterScboyClippableVideos(
   videos: readonly BiliVideo[],
 ): readonly BiliVideo[] {
   return videos.filter((video) =>
@@ -28,30 +28,30 @@ export function filterScboyProcessableVideos(
   );
 }
 
-export function buildScboyVideoExecutionPlan(
+export function buildScboyClippingPlan(
   video: BiliVideo,
   parts: readonly BiliVideoPart[],
   llmModel: string,
-  runOptions: WorkflowRunOptions,
+  clippingOptions: ClippingOptions,
   outputRoot: string,
-): VideoExecutionPlan {
-  return buildVideoExecutionPlan(
+): ClippingPlan {
+  return buildClippingPlan(
     video,
     parts,
     llmModel,
-    runOptions,
+    clippingOptions,
     outputRoot,
     buildScboyOutputDirectoryName(video),
-    buildScboyProgressVideoTitle(video.title),
+    buildScboyClippingProgressTitle(video.title),
   );
 }
 
 export function buildScboyPodcastStageInputs(
-  processedVideos: readonly ScboyProcessedVideo[],
+  clippingResults: readonly ScboyClippingResult[],
 ): PodcastStageInput[] {
-  return processedVideos.map((processedVideo) => ({
-    outputDirectory: processedVideo.outputDir,
-    episodeNumber: processedVideo.episodeNumber,
+  return clippingResults.map((clippingResult) => ({
+    outputDirectory: clippingResult.outputDir,
+    episodeNumber: clippingResult.episodeNumber,
   }));
 }
 
@@ -91,7 +91,7 @@ export function buildScboyEpisodeNumbers(
   return episodeNumbers;
 }
 
-function buildScboyProgressVideoTitle(videoTitle: string): string {
+function buildScboyClippingProgressTitle(videoTitle: string): string {
   const dateMatch = videoTitle.match(TITLE_DATE_PATTERN);
   const shortDate =
     dateMatch === null

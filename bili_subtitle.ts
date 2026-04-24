@@ -20,12 +20,12 @@ export class MissingSubtitleError extends Error {
     public readonly lang = DEFAULT_SUBTITLE_LANG,
   ) {
     super(
-      `Missing ${lang} subtitle for ${videoPart.bvid} p${videoPart.page} ${videoPart.tittle}: expected ${subtitlePath}`,
+      `Missing ${lang} subtitle for ${videoPart.bvid} p${videoPart.page} ${videoPart.title}: expected ${subtitlePath}`,
     );
     this.name = "MissingSubtitleError";
     this.bvid = videoPart.bvid;
     this.page = videoPart.page;
-    this.title = videoPart.tittle;
+    this.title = videoPart.title;
     Object.setPrototypeOf(this, MissingSubtitleError.prototype);
   }
 }
@@ -45,14 +45,14 @@ export async function downloadSubtitle(
     `${buildBiliPartFileStem(videoPart)}.${DEFAULT_SUBTITLE_LANG}.srt`,
   );
   const targetUrl = `https://www.bilibili.com/video/${videoPart.bvid}?p=${videoPart.page}`;
-  const partLabel = `${videoPart.bvid} p${videoPart.page} ${videoPart.tittle}`;
+  const partLabel = `${videoPart.bvid} p${videoPart.page} ${videoPart.title}`;
 
   return profileSpan(
     "downloadSubtitle",
     {
       bvid: videoPart.bvid,
       page: videoPart.page,
-      title: videoPart.tittle,
+      title: videoPart.title,
       outputPath: subtitlePath,
     },
     async (span) => {
