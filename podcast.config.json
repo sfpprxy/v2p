@@ -10,6 +10,7 @@
   "explicit": false,
   "type": "episodic",
   "siteUrl": "https://sfpprxy.github.io/v2p",
+  "guidPrefix": "scboy",
   "defaultPublishTime": "08:00:00+08:00",
   "coverImageSourcePath": "avatar-xiaoyuzhou-cover.jpg",
   "coverImageOutputPath": "assets/cover.jpg",

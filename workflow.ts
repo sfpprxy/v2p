@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { $ } from "bun";
 import { buildBiliClient } from "./bili_utils";
-import { BiliVideo, BiliVideoPart, BiliVideoStore, isDateValue } from "./bili_video";
+import { BiliVideo, BiliVideoPart } from "./bili_video";
 import { getProfileOutputPath, profileSpan } from "./perf";
 import { stageEpisodes } from "./podcast";
 import {
@@ -11,9 +11,12 @@ import {
   updateWorkflowProgressBars,
 } from "./workflow_progress";
 import {
-  buildVideoExecutionPlan,
-  filterProcessableVideos,
-} from "./workflow_plan";
+  buildScboyPodcastStageInputs,
+  buildScboyEpisodeNumbers,
+  buildScboyVideoExecutionPlan,
+  filterScboyProcessableVideos,
+  type ScboyProcessedVideo,
+} from "./scboy_video_plan";
 import {
   getWorkflowProgressState,
   startVideoExecution,
@@ -25,6 +28,7 @@ import {
   buildWorkflowReportError,
   updateVideoReportPublishStatus,
 } from "./workflow_report";
+import { ScboyVideoStore, isDateValue } from "./scboy_video_store";
 
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
@@ -38,7 +42,7 @@ interface VideoWithParts {
 async function processVideos(
   llmModel: string,
   dateInTitle?: string | [string, string] | string[] | null,
-): Promise<string[]> {
+): Promise<ScboyProcessedVideo[]> {
   return profileSpan(
     "processVideos",
     {
@@ -55,10 +59,10 @@ async function processVideos(
       }
 
       const client = buildBiliClient();
-      const store = BiliVideoStore.open();
+      const store = ScboyVideoStore.open();
       try {
         const listedVideos = store.listVideos(dateInTitle);
-        const videos = filterProcessableVideos(listedVideos);
+        const videos = filterScboyProcessableVideos(listedVideos);
         if (listedVideos.length !== videos.length) {
           console.log(
             `[processVideos:skip] ignored ${listedVideos.length - videos.length} videos without processable title prefix`,
@@ -68,6 +72,7 @@ async function processVideos(
           videoCount: videos.length,
           skippedVideoCount: listedVideos.length - videos.length,
         });
+        const episodeNumbers = buildScboyEpisodeNumbers(videos);
 
         const videosWithParts: VideoWithParts[] = [];
         for (const video of videos) {
@@ -103,7 +108,7 @@ async function processVideos(
           for (const { video, parts } of videosWithParts) {
             videoExecutions.push(
               await startVideoExecution(
-                buildVideoExecutionPlan(video, parts, llmModel, OUTPUT_ROOT),
+                buildScboyVideoExecutionPlan(video, parts, llmModel, OUTPUT_ROOT),
                 client,
                 progressDisplay,
               ),
@@ -128,11 +133,23 @@ async function processVideos(
           if (firstFailedFinalizeResult !== undefined) {
             throw firstFailedFinalizeResult.reason;
           }
-          return finalizedVideoResults.flatMap((result) =>
-            result.status === "fulfilled" && result.value !== null
-              ? [result.value]
-              : [],
-          );
+          return finalizedVideoResults.flatMap((result, index) => {
+            if (result.status !== "fulfilled" || result.value === null) {
+              return [];
+            }
+            const video = videosWithParts[index]!.video;
+            const episodeNumber = episodeNumbers.get(video.bvid);
+            if (episodeNumber === undefined) {
+              throw new Error(`Missing episode number for ${video.bvid}`);
+            }
+            return [
+              {
+                video,
+                outputDir: result.value,
+                episodeNumber,
+              },
+            ];
+          });
         } finally {
           if (progressTimer !== null) {
             clearInterval(progressTimer);
@@ -185,16 +202,17 @@ if (import.meta.main) {
       throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
   }
 
-  const podcastOutputDirectories = await processVideos(
+  const processedVideos = await processVideos(
     llmModel,
     dateArgs.length === 0 ? null : dateArgs,
   );
-  await stageEpisodes(podcastOutputDirectories);
-  await publishPodcastRelease(podcastOutputDirectories);
+  const podcastStageInputs = buildScboyPodcastStageInputs(processedVideos);
+  await stageEpisodes(podcastStageInputs);
+  await publishPodcastRelease(podcastStageInputs);
 }
 
 async function publishPodcastRelease(
-  podcastOutputDirectories: readonly string[],
+  podcastStageInputs: readonly { outputDirectory: string }[],
 ): Promise<void> {
   for (const releasePath of PODCAST_RELEASE_PATHS) {
     await runGit(["add", releasePath]);
@@ -273,7 +291,7 @@ async function publishPodcastRelease(
   );
   if (releaseAheadStatus === "clean") {
     console.log("Podcast release unchanged; nothing to push.");
-    await updatePublishStatusForOutputDirectories(podcastOutputDirectories, {
+    await updatePublishStatusForOutputDirectories(podcastStageInputs, {
       status: "ok",
       attemptCount: 1,
     });
@@ -290,7 +308,7 @@ async function publishPodcastRelease(
         decide: () => "retry",
       },
     );
-    await updatePublishStatusForOutputDirectories(podcastOutputDirectories, {
+    await updatePublishStatusForOutputDirectories(podcastStageInputs, {
       status: "ok",
       attemptCount,
     });
@@ -303,7 +321,7 @@ async function publishPodcastRelease(
         : 1;
     const publishError =
       error instanceof Error && "cause" in error ? error.cause : error;
-    await updatePublishStatusForOutputDirectories(podcastOutputDirectories, {
+    await updatePublishStatusForOutputDirectories(podcastStageInputs, {
       status: "error",
       attemptCount,
       error: buildWorkflowReportError(publishError),
@@ -338,7 +356,7 @@ async function readGitDiffQuietStatus(
 }
 
 async function updatePublishStatusForOutputDirectories(
-  podcastOutputDirectories: readonly string[],
+  podcastStageInputs: readonly { outputDirectory: string }[],
   publish:
     | {
         status: "ok";
@@ -350,7 +368,7 @@ async function updatePublishStatusForOutputDirectories(
         error: ReturnType<typeof buildWorkflowReportError>;
       },
 ): Promise<void> {
-  for (const outputDirectory of podcastOutputDirectories) {
+  for (const { outputDirectory } of podcastStageInputs) {
     await updateVideoReportPublishStatus(
       findVideoReportPath(outputDirectory),
       publish,

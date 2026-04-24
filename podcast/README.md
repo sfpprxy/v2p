@@ -12,11 +12,12 @@
 - 在本地运行 `bun run workflow.ts`
 - 等待 GitHub Actions 重建并发布 `feed.xml`
 
-`workflow.ts` 会在视频处理成功后自动把本次生成的 `output/` 单集目录交给
-`podcast:stage` 的内部逻辑。发布层会先读取对应的
-`podcast/episodes/<year>/<episode>.json`，用本地音频、shownotes、标题、发布时间、
-大小、时长和 R2 object key 重建预期 manifest；如果和已有 manifest 一致，就跳过 R2
-上传和 manifest 写入。只有新增或发生差异的单集会重新上传音频并更新 manifest。
+`workflow.ts` 会在视频处理成功后根据业务层给出的单集编号，把本次生成的
+`output/` 单集目录交给 `podcast:stage` 的内部逻辑。发布层会先读取对应的
+`podcast/episodes/<year>/<episode-number>.json`，用本地音频、shownotes、标题、
+发布时间、大小、时长和 R2 object key 重建预期 manifest；如果和已有 manifest
+一致，就跳过 R2 上传和 manifest 写入。只有新增或发生差异的单集会重新上传音频并
+更新 manifest。
 随后 `workflow.ts` 会自动暂存 `podcast/episodes`，有发布差异时提交
 `Publish podcast episodes`，并把当前分支推送到 upstream。推送后，GitHub Actions
 会基于已提交的 manifest 重建并发布 feed。
@@ -29,11 +30,15 @@
 - `PODCAST_R2_PUBLIC_BASE_URL`
 
 `podcast:stage` 会在运行时用 `PODCAST_R2_BEARER_TOKEN` 调 Cloudflare token verify 接口取回 token id，并按 Cloudflare R2 文档推导出 S3 所需的 `Access Key ID / Secret Access Key`，所以 `.env` 不再保存这两个派生值。
+`podcast.config.json` 里的 `guidPrefix` 是 RSS item GUID 的频道级前缀；发布脚本不会把具体频道名写死在代码里。
 
 命令职责分工：
 
-- `bun run podcast:stage -- <output-dir>`
-  这是“发布一集”的手动入口。它会读取 `output/` 里的音频和 shownotes，检测 manifest 是否有差异；有差异才上传音频到 R2、写入 `podcast/episodes/<year>/<episode>.json`，最后重建一次本地 `feed.xml`。
+- `bun run podcast:stage -- <episode-number> <output-dir>`
+  这是“发布一集”的手动入口。`episode-number` 由调用方显式提供，例如 `0311-1`。
+  它会读取 `output/` 里的音频和 shownotes，检测 manifest 是否有差异；有差异才上传
+  音频到 R2、写入 `podcast/episodes/<year>/<episode-number>.json`，最后重建一次本地
+  `feed.xml`。
 - `bun run podcast:build`
   这是“纯重建 feed”的入口。它不会读取 `output/`，也不会上传 R2，只会基于仓库里已有的 `podcast/episodes/**/*.json` 重建 `podcast/site/feed.xml` 和 `index.html`。
 

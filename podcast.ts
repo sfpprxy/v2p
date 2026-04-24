@@ -36,6 +36,7 @@ const podcastConfigSchema = z.object({
   explicit: z.boolean(),
   type: z.enum(["episodic", "serial"]),
   siteUrl: z.string().url(),
+  guidPrefix: z.string().min(1),
   defaultPublishTime: z
     .string()
     .regex(/^\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/u),
@@ -51,7 +52,7 @@ const episodeManifestSchema = z.object({
   description: z.string().min(1),
   publishedAt: z.string().datetime({ offset: true }),
   seasonNumber: z.string().regex(/^\d{4}$/u),
-  episodeNumber: z.string().regex(/^\d{4}$/u),
+  episodeNumber: z.string().regex(/^\d{4}-\d+$/u),
   audioUrl: z.string().url(),
   audioBytes: z.number().int().positive(),
   audioType: z.string().min(1),
@@ -81,6 +82,11 @@ interface PodcastUploadCredentials extends PodcastUploadEnvironment {
   PODCAST_R2_SECRET_ACCESS_KEY: string;
 }
 
+export interface PodcastStageInput {
+  outputDirectory: string;
+  episodeNumber: string;
+}
+
 interface SourceEpisode {
   id: string;
   guid: string;
@@ -99,11 +105,20 @@ async function main(args: string[]): Promise<void> {
   const command = args[0];
 
   if (command === "stage") {
-    const outputDirectory = args[1];
-    if (outputDirectory === undefined) {
-      throw new Error("Usage: bun run podcast.ts stage <output-directory>");
+    const stageArgs = args.slice(1);
+    if (stageArgs.length === 0 || stageArgs.length % 2 !== 0) {
+      throw new Error(
+        "Usage: bun run podcast.ts stage <episode-number> <output-directory> ...",
+      );
     }
-    await stageEpisodes([outputDirectory]);
+    const stageInputs: PodcastStageInput[] = [];
+    for (let index = 0; index < stageArgs.length; index += 2) {
+      stageInputs.push({
+        episodeNumber: stageArgs[index]!,
+        outputDirectory: stageArgs[index + 1]!,
+      });
+    }
+    await stageEpisodes(stageInputs);
     return;
   }
 
@@ -116,17 +131,26 @@ async function main(args: string[]): Promise<void> {
 }
 
 export async function stageEpisodes(
-  outputDirectories: readonly string[],
+  stageInputs: readonly PodcastStageInput[],
 ): Promise<void> {
   const config = loadPodcastConfig();
   let uploadEnvironment: PodcastUploadCredentials | null = null;
 
-  for (const outputDirectory of outputDirectories) {
+  for (const stageInput of stageInputs) {
     const sourceEpisode = await readSourceEpisode(
-      outputDirectory,
+      stageInput,
+      config.guidPrefix,
       config.defaultPublishTime,
     );
     const existingManifest = readExistingEpisodeManifest(sourceEpisode);
+    if (
+      existingManifest !== null &&
+      existingManifest.source.bvid !== sourceEpisode.source.bvid
+    ) {
+      throw new Error(
+        `Podcast episode ${sourceEpisode.id} already belongs to ${existingManifest.source.bvid}, cannot overwrite with ${sourceEpisode.source.bvid}`,
+      );
+    }
     if (
       existingManifest !== null &&
       JSON.stringify(
@@ -260,22 +284,32 @@ async function loadPodcastUploadEnvironment(): Promise<PodcastUploadCredentials>
 }
 
 async function readSourceEpisode(
-  outputDirectory: string,
+  stageInput: PodcastStageInput,
+  guidPrefix: string,
   defaultPublishTime: string,
 ): Promise<SourceEpisode> {
-  const resolvedOutputDirectory = resolve(PROJECT_ROOT, outputDirectory);
+  const resolvedOutputDirectory = resolve(PROJECT_ROOT, stageInput.outputDirectory);
   const outputDirectoryName = basename(resolvedOutputDirectory);
   const outputYear = basename(resolve(resolvedOutputDirectory, ".."));
   const outputDirectoryMatch = outputDirectoryName.match(OUTPUT_DIRECTORY_PATTERN);
+  const episodeNumberMatch = stageInput.episodeNumber.match(/^(\d{2})(\d{2})-\d+$/u);
 
   if (outputDirectoryMatch === null) {
     throw new Error(`Invalid output directory name: ${outputDirectoryName}`);
+  }
+  if (episodeNumberMatch === null) {
+    throw new Error(`Invalid episode number: ${stageInput.episodeNumber}`);
   }
   if (!/^\d{4}$/u.test(outputYear)) {
     throw new Error(`Invalid episode year directory: ${outputYear}`);
   }
 
   const [, month, day, title] = outputDirectoryMatch;
+  if (episodeNumberMatch[1] !== month || episodeNumberMatch[2] !== day) {
+    throw new Error(
+      `Episode number ${stageInput.episodeNumber} does not match output directory date ${month}${day}`,
+    );
+  }
   const audioFileName = readSingleFileName(resolvedOutputDirectory, AUDIO_FILE_SUFFIX);
   const shownotesFileName = readSingleFileName(
     resolvedOutputDirectory,
@@ -284,15 +318,43 @@ async function readSourceEpisode(
   const audioPath = resolve(resolvedOutputDirectory, audioFileName);
   const shownotesPath = resolve(resolvedOutputDirectory, shownotesFileName);
   const bvid = audioFileName.slice(0, -AUDIO_FILE_SUFFIX.length);
+  const sequenceMatch = stageInput.episodeNumber.match(/^\d{4}-(\d+)$/u);
+  if (sequenceMatch === null) {
+    throw new Error(`Invalid episode number: ${stageInput.episodeNumber}`);
+  }
+  const sequence = Number(sequenceMatch[1]);
+  if (!Number.isInteger(sequence) || sequence < 1) {
+    throw new Error(`Invalid episode sequence: ${stageInput.episodeNumber}`);
+  }
+  const publishDate = new Date(
+    `${outputYear}-${month}-${day}T${defaultPublishTime}`,
+  );
+  publishDate.setMinutes(publishDate.getMinutes() + sequence - 1);
+  const publishOffset = defaultPublishTime.slice(-6);
+  const publishOffsetSign = publishOffset[0];
+  const publishOffsetHours = Number(publishOffset.slice(1, 3));
+  const publishOffsetMinutes = Number(publishOffset.slice(4, 6));
+  if (
+    (publishOffsetSign !== "+" && publishOffsetSign !== "-") ||
+    !Number.isInteger(publishOffsetHours) ||
+    !Number.isInteger(publishOffsetMinutes)
+  ) {
+    throw new Error(`Invalid publish time offset: ${defaultPublishTime}`);
+  }
+  const publishOffsetMs =
+    (publishOffsetHours * 60 + publishOffsetMinutes) *
+    60_000 *
+    (publishOffsetSign === "+" ? 1 : -1);
+  const localPublishDate = new Date(publishDate.getTime() + publishOffsetMs);
 
   return {
-    id: `${outputYear}-${month}${day}`,
-    guid: `scboy:${outputYear}:${month}${day}:${bvid}`,
+    id: `${outputYear}-${stageInput.episodeNumber}`,
+    guid: `${guidPrefix}:${outputYear}:${month}${day}:${bvid}`,
     title,
     description: readFileSync(shownotesPath, "utf8"),
-    publishedAt: `${outputYear}-${month}-${day}T${defaultPublishTime}`,
+    publishedAt: `${localPublishDate.toISOString().slice(0, 19)}${publishOffset}`,
     seasonNumber: outputYear,
-    episodeNumber: `${month}${day}`,
+    episodeNumber: stageInput.episodeNumber,
     audioBytes: statSync(audioPath).size,
     audioType: inferAudioType(audioPath),
     durationSeconds: await probeDurationSeconds(audioPath),
@@ -492,10 +554,18 @@ function buildFeedItemXml(
       <itunes:image href="${xmlEscape(coverImageUrl)}" />
       <itunes:duration>${xmlEscape(formatDuration(episodeManifest.durationSeconds))}</itunes:duration>
       <itunes:season>${xmlEscape(episodeManifest.seasonNumber)}</itunes:season>
-      <itunes:episode>${xmlEscape(episodeManifest.episodeNumber)}</itunes:episode>
+      <itunes:episode>${xmlEscape(formatItunesEpisodeNumber(episodeManifest.episodeNumber))}</itunes:episode>
       <itunes:episodeType>full</itunes:episodeType>
     </item>
 `;
+}
+
+function formatItunesEpisodeNumber(episodeNumber: string): string {
+  const match = episodeNumber.match(/^(\d{4})-(\d+)$/u);
+  if (match === null) {
+    throw new Error(`Invalid episode number: ${episodeNumber}`);
+  }
+  return `${match[1]}${match[2]!.padStart(2, "0")}`;
 }
 
 function collectEpisodeManifestPaths(rootDirectory: string): string[] {
