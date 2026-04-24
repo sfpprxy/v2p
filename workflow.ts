@@ -224,18 +224,33 @@ function buildWorkflowProgressItems(
           break;
         case "active":
           rank = 2;
-          if (part.statusLabel === null) {
-            throw new Error(
-              `Active part progress is missing status label for P${part.page}`,
+          {
+            const visibleTask =
+              part.activeTasks.find(
+                (task) => task.statusLabel === "裁剪音频",
+              ) ??
+              part.activeTasks.find(
+                (task) => task.statusLabel === "LLM提取",
+              ) ??
+              part.activeTasks.find(
+                (task) => task.statusLabel === "下载音频",
+              ) ??
+              part.activeTasks.find(
+                (task) => task.statusLabel === "下载字幕",
+              );
+            if (visibleTask === undefined) {
+              throw new Error(
+                `Active part progress is missing active task for P${part.page}`,
+              );
+            }
+            status = chalk.yellow(
+              visibleTask.attemptCount !== null &&
+                visibleTask.maxAttempts !== null &&
+                visibleTask.attemptCount > 1
+                ? `${visibleTask.statusLabel} 重试 ${visibleTask.attemptCount}/${visibleTask.maxAttempts}`
+                : visibleTask.statusLabel,
             );
           }
-          status = chalk.yellow(
-            part.attemptCount !== null &&
-              part.maxAttempts !== null &&
-              part.attemptCount > 1
-              ? `${part.statusLabel} 重试 ${part.attemptCount}/${part.maxAttempts}`
-              : part.statusLabel,
-          );
           break;
         case "skipped":
           rank = 3;

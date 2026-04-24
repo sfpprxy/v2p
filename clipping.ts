@@ -122,12 +122,21 @@ export async function startClipping(
             (statusLabel, attemptCount, maxAttempts) => {
               updateState(
                 reduceClippingState(controller.getState(), {
-                  type: "partProgressStarted",
+                  type: "partProgressTaskStarted",
                   partIndex,
                   startedMs: performance.now(),
                   statusLabel,
                   attemptCount,
                   maxAttempts,
+                }),
+              );
+            },
+            (statusLabel) => {
+              updateState(
+                reduceClippingState(controller.getState(), {
+                  type: "partProgressTaskFinished",
+                  partIndex,
+                  statusLabel,
                 }),
               );
             },
@@ -292,6 +301,7 @@ async function clipPart(
     attemptCount: number | null,
     maxAttempts: number | null,
   ) => void,
+  onPartProgressFinished: (statusLabel: string) => void,
 ): Promise<ClipPartResult> {
   return profileSpan(
     "clipPart",
@@ -329,7 +339,11 @@ async function clipPart(
 
       try {
         onPartProgressStarted("下载字幕", null, null);
-        const subtitlePath = await downloadSubtitle(part, outputDir);
+        const subtitlePath = await downloadSubtitle(part, outputDir).finally(
+          () => {
+            onPartProgressFinished("下载字幕");
+          },
+        );
         const segmentJsonPath = buildSegmentJsonPath(subtitlePath, ".segments");
         const relativeSegmentsPath = buildSegmentJsonPath(
           subtitlePath,
@@ -351,6 +365,8 @@ async function clipPart(
               async () =>
                 extractSegments(subtitlePath, part.title, llmModel, {
                   segmentExtraction: clippingOptions.segmentExtraction,
+                }).finally(() => {
+                  onPartProgressFinished("LLM提取");
                 }),
               {
                 maxAttempts: 3,
@@ -363,7 +379,9 @@ async function clipPart(
           ),
           runAudioDownloadOrdered(part.page, () => {
             onPartProgressStarted("下载音频", null, null);
-            return downloadAudio(part, client, outputDir);
+            return downloadAudio(part, client, outputDir).finally(() => {
+              onPartProgressFinished("下载音频");
+            });
           }),
         ]);
         const { segments, fixes, metadata } = segmentResult.value;
@@ -372,7 +390,9 @@ async function clipPart(
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
           audioPath,
-        );
+        ).finally(() => {
+          onPartProgressFinished("裁剪音频");
+        });
         span.set({ offtopicAudioPath: audioResult.outputPath });
         return {
           processedPart: {

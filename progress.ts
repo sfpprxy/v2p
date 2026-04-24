@@ -46,7 +46,7 @@ export function createProgressDisplay(
       barCompleteChar: "█",
       barIncompleteChar: "░",
       barsize: 26,
-      hideCursor: true,
+      hideCursor: false,
       emptyOnZero: true,
     },
     Presets.shades_classic,
@@ -64,9 +64,14 @@ export function createProgressDisplay(
         ),
       },
       () =>
-        multibar.create(1, 0, { ...options.emptyPayload }, {
-          format: options.itemFormat,
-        }),
+        multibar.create(
+          1,
+          0,
+          { ...options.emptyPayload },
+          {
+            format: options.itemFormat,
+          },
+        ),
     ),
     emptyPayload: { ...options.emptyPayload },
   };

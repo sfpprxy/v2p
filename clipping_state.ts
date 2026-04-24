@@ -12,13 +12,18 @@ export type ClippingPartProgressPhase =
   | "skipped"
   | "error";
 
+export interface ClippingPartProgressTask {
+  statusLabel: string;
+  attemptCount: number | null;
+  maxAttempts: number | null;
+  startedMs: number;
+}
+
 export interface ClippingPartProgressState {
   page: number;
   title: string;
   phase: ClippingPartProgressPhase;
-  statusLabel: string | null;
-  attemptCount: number | null;
-  maxAttempts: number | null;
+  activeTasks: ClippingPartProgressTask[];
   startedMs: number | null;
   completedMs: number | null;
   processingTime: string | null;
@@ -44,12 +49,17 @@ export interface ClippingState {
 
 export type ClippingEvent =
   | {
-      type: "partProgressStarted";
+      type: "partProgressTaskStarted";
       partIndex: number;
       startedMs: number;
       statusLabel: string;
       attemptCount: number | null;
       maxAttempts: number | null;
+    }
+  | {
+      type: "partProgressTaskFinished";
+      partIndex: number;
+      statusLabel: string;
     }
   | {
       type: "partSucceeded";
@@ -82,9 +92,7 @@ export function createClippingState(
         page: part.page,
         title: part.title,
         phase: "pending",
-        statusLabel: null,
-        attemptCount: null,
-        maxAttempts: null,
+        activeTasks: [],
         startedMs: null,
         completedMs: null,
         processingTime: null,
@@ -100,7 +108,7 @@ export function reduceClippingState(
   event: ClippingEvent,
 ): ClippingState {
   switch (event.type) {
-    case "partProgressStarted":
+    case "partProgressTaskStarted":
       return {
         ...state,
         partStates: state.partStates.map((partState, index) =>
@@ -111,12 +119,47 @@ export function reduceClippingState(
                 progress: {
                   ...partState.progress,
                   phase: "active",
-                  statusLabel: event.statusLabel,
-                  attemptCount: event.attemptCount,
-                  maxAttempts: event.maxAttempts,
+                  activeTasks: partState.progress.activeTasks.some(
+                    (task) => task.statusLabel === event.statusLabel,
+                  )
+                    ? partState.progress.activeTasks.map((task) =>
+                        task.statusLabel !== event.statusLabel
+                          ? task
+                          : {
+                              ...task,
+                              attemptCount: event.attemptCount,
+                              maxAttempts: event.maxAttempts,
+                            },
+                      )
+                    : [
+                        ...partState.progress.activeTasks,
+                        {
+                          statusLabel: event.statusLabel,
+                          attemptCount: event.attemptCount,
+                          maxAttempts: event.maxAttempts,
+                          startedMs: event.startedMs,
+                        },
+                      ],
                   startedMs: partState.progress.startedMs ?? event.startedMs,
                   completedMs: null,
                   processingTime: null,
+                },
+              },
+        ),
+      };
+    case "partProgressTaskFinished":
+      return {
+        ...state,
+        partStates: state.partStates.map((partState, index) =>
+          index !== event.partIndex
+            ? partState
+            : {
+                ...partState,
+                progress: {
+                  ...partState.progress,
+                  activeTasks: partState.progress.activeTasks.filter(
+                    (task) => task.statusLabel !== event.statusLabel,
+                  ),
                 },
               },
         ),
@@ -136,8 +179,7 @@ export function reduceClippingState(
                 progress: {
                   ...partState.progress,
                   phase: event.result.report.status,
-                  statusLabel: null,
-                  attemptCount: event.attemptCount,
+                  activeTasks: [],
                   completedMs: event.completedMs,
                   processingTime: event.result.report.processingTime,
                 },
@@ -159,8 +201,7 @@ export function reduceClippingState(
                 progress: {
                   ...partState.progress,
                   phase: "error",
-                  statusLabel: null,
-                  attemptCount: event.attemptCount,
+                  activeTasks: [],
                   completedMs: event.completedMs,
                   processingTime: formatProcessingTime(
                     event.completedMs - (partState.progress.startedMs ?? 0),
