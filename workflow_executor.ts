@@ -94,13 +94,6 @@ export async function startVideoExecution(
   void Promise.all(
     plan.parts.map((part, partIndex) =>
       processVideoPartLimited(async () => {
-        updateState(
-          reduceVideoExecutionState(controller.getState(), {
-            type: "partStarted",
-            partIndex,
-            startedMs: performance.now(),
-          }),
-        );
         try {
           const result = await processPart(
             part,
@@ -109,6 +102,17 @@ export async function startVideoExecution(
             runAudioDownloadOrdered,
             runLlmOrdered,
             plan.llmModel,
+            (attemptCount, maxAttempts) => {
+              updateState(
+                reduceVideoExecutionState(controller.getState(), {
+                  type: "partAttemptStarted",
+                  partIndex,
+                  startedMs: performance.now(),
+                  attemptCount,
+                  maxAttempts,
+                }),
+              );
+            },
           );
           updateState(
             reduceVideoExecutionState(controller.getState(), {

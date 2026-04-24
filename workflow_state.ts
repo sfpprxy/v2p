@@ -24,9 +24,11 @@ export interface VideoExecutionState {
 
 export type VideoExecutionEvent =
   | {
-      type: "partStarted";
+      type: "partAttemptStarted";
       partIndex: number;
       startedMs: number;
+      attemptCount: number;
+      maxAttempts: number;
     }
   | {
       type: "partSucceeded";
@@ -59,6 +61,8 @@ export function createVideoExecutionState(
         page: part.page,
         title: part.tittle,
         status: "pending",
+        attemptCount: null,
+        maxAttempts: null,
         startedMs: null,
         completedMs: null,
         processingTime: null,
@@ -74,7 +78,7 @@ export function reduceVideoExecutionState(
   event: VideoExecutionEvent,
 ): VideoExecutionState {
   switch (event.type) {
-    case "partStarted":
+    case "partAttemptStarted":
       return {
         ...state,
         partStates: state.partStates.map((partState, index) =>
@@ -84,8 +88,10 @@ export function reduceVideoExecutionState(
                 ...partState,
                 progress: {
                   ...partState.progress,
-                  status: "running",
-                  startedMs: event.startedMs,
+                  status: event.attemptCount === 1 ? "running" : "retrying",
+                  attemptCount: event.attemptCount,
+                  maxAttempts: event.maxAttempts,
+                  startedMs: partState.progress.startedMs ?? event.startedMs,
                   completedMs: null,
                   processingTime: null,
                 },
@@ -107,6 +113,7 @@ export function reduceVideoExecutionState(
                 progress: {
                   ...partState.progress,
                   status: event.result.report.status,
+                  attemptCount: event.attemptCount,
                   completedMs: event.completedMs,
                   processingTime: event.result.report.processingTime,
                 },
@@ -128,6 +135,7 @@ export function reduceVideoExecutionState(
                 progress: {
                   ...partState.progress,
                   status: "error",
+                  attemptCount: event.attemptCount,
                   completedMs: event.completedMs,
                   processingTime: formatProcessingTime(
                     event.completedMs - (partState.progress.startedMs ?? 0),

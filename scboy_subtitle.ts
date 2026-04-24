@@ -118,12 +118,6 @@ export async function extractSegments(
         await saveExtractedSegments(subtitlePath, segments);
         return { segments, fixes: [...subtitleTextFixes, ...fixes] };
       } catch (error) {
-        console.error("[extractSegments:error]", {
-          subtitlePath,
-          partTitle,
-          llmModel,
-          error,
-        });
         throw error;
       } finally {
         if (shouldLog) {

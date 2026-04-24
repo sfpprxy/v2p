@@ -3,6 +3,7 @@ export type RetryDecision = "retry" | "throw";
 export interface RetryPolicy {
   maxAttempts: number;
   decide: (error: unknown, attemptCount: number) => RetryDecision;
+  onAttemptStarted?: (attemptCount: number, maxAttempts: number) => void;
 }
 
 export class RetryExecutionError extends Error {
@@ -24,6 +25,7 @@ export async function runWithRetry<T>(
   let attemptCount = 0;
   while (true) {
     attemptCount += 1;
+    retryPolicy.onAttemptStarted?.(attemptCount, retryPolicy.maxAttempts);
     try {
       return {
         value: await run(attemptCount),

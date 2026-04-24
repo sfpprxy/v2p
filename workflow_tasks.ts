@@ -27,6 +27,7 @@ export async function processPart(
   runAudioDownloadOrdered: OrderedTaskRunner<number>,
   runLlmOrdered: OrderedTaskRunner<number>,
   llmModel: string,
+  onPartAttemptStarted: (attemptCount: number, maxAttempts: number) => void,
 ): Promise<ProcessPartResult> {
   return profileSpan(
     "processPart",
@@ -86,6 +87,7 @@ export async function processPart(
               {
                 maxAttempts: 3,
                 decide: () => "retry",
+                onAttemptStarted: onPartAttemptStarted,
               },
             ),
           ),
