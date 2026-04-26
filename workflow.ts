@@ -212,7 +212,7 @@ function buildWorkflowProgressItems(
   for (const state of states) {
     for (const part of state.partProgressStates) {
       const processingTime =
-        part.phase === "active"
+        part.phase === "active" || part.phase === "waiting"
           ? formatProcessingTime(now - (part.startedMs ?? 0))
           : (part.processingTime ?? "-");
       let rank: number;
@@ -252,16 +252,20 @@ function buildWorkflowProgressItems(
             );
           }
           break;
-        case "skipped":
+        case "waiting":
           rank = 3;
+          status = chalk.yellow("等待任务");
+          break;
+        case "skipped":
+          rank = 4;
           status = chalk.gray("skipped");
           break;
         case "ok":
-          rank = 4;
+          rank = 5;
           status = chalk.green("done");
           break;
         case "pending":
-          rank = 5;
+          rank = 6;
           status = chalk.dim("pending");
           break;
       }
@@ -269,8 +273,14 @@ function buildWorkflowProgressItems(
         rank,
         isComplete:
           part.phase !== "pending" &&
-          part.phase !== "active",
-        value: part.phase === "pending" || part.phase === "active" ? 0 : 1,
+          part.phase !== "active" &&
+          part.phase !== "waiting",
+        value:
+          part.phase === "pending" ||
+          part.phase === "active" ||
+          part.phase === "waiting"
+            ? 0
+            : 1,
         total: 1,
         completedMs: part.completedMs,
         completedVisibleMs:

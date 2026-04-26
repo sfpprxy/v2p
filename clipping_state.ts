@@ -7,6 +7,7 @@ import {
 
 export type ClippingPartProgressPhase =
   | "pending"
+  | "waiting"
   | "active"
   | "ok"
   | "skipped"
@@ -150,19 +151,23 @@ export function reduceClippingState(
     case "partProgressTaskFinished":
       return {
         ...state,
-        partStates: state.partStates.map((partState, index) =>
-          index !== event.partIndex
-            ? partState
-            : {
-                ...partState,
-                progress: {
-                  ...partState.progress,
-                  activeTasks: partState.progress.activeTasks.filter(
-                    (task) => task.statusLabel !== event.statusLabel,
-                  ),
-                },
-              },
-        ),
+        partStates: state.partStates.map((partState, index) => {
+          if (index !== event.partIndex) {
+            return partState;
+          }
+
+          const activeTasks = partState.progress.activeTasks.filter(
+            (task) => task.statusLabel !== event.statusLabel,
+          );
+          return {
+            ...partState,
+            progress: {
+              ...partState.progress,
+              phase: activeTasks.length === 0 ? "waiting" : "active",
+              activeTasks,
+            },
+          };
+        }),
       };
     case "partSucceeded":
       return {
