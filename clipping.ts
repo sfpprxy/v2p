@@ -29,10 +29,7 @@ import {
   writeClippingReport,
 } from "./workflow_report";
 import type { ProgressDisplay } from "./progress";
-import type {
-  ClippingPlan,
-  ClippingOptions,
-} from "./clipping_plan";
+import type { ClippingPlan, ClippingOptions } from "./clipping_plan";
 import {
   createClippingState,
   isClippingReadyForFinalize,
@@ -63,7 +60,9 @@ export async function startClipping(
     rejectCompletion = reject;
   });
   if (resolveCompletion === undefined || rejectCompletion === undefined) {
-    throw new Error(`Failed to initialize completion promise for ${plan.video.bvid}`);
+    throw new Error(
+      `Failed to initialize completion promise for ${plan.video.bvid}`,
+    );
   }
   const resolveClipping = resolveCompletion;
   const rejectClipping = rejectCompletion;
@@ -147,7 +146,9 @@ export async function startClipping(
               partIndex,
               completedMs: performance.now(),
               attemptCount:
-                result.report.status === "ok" ? result.report.attemptCount : null,
+                result.report.status === "ok"
+                  ? result.report.attemptCount
+                  : null,
               result,
             }),
           );
@@ -369,7 +370,7 @@ async function clipPart(
                   onPartProgressFinished("LLM提取");
                 }),
               {
-                maxAttempts: 3,
+                maxAttempts: 4,
                 decide: () => "retry",
                 onAttemptStarted: (attemptCount, maxAttempts) => {
                   onPartProgressStarted("LLM提取", attemptCount, maxAttempts);
@@ -492,7 +493,9 @@ async function mergeClippingOutputs(
         span.set({ skipped: true, skipReason: "emptyParts" });
         return;
       }
-      const sortedParts = parts.toSorted((left, right) => left.page - right.page);
+      const sortedParts = parts.toSorted(
+        (left, right) => left.page - right.page,
+      );
       const mergedAudioPath = resolve(outputDir, `${bvid}.merge.offtopic.m4a`);
       const shownotesPath = resolve(outputDir, `${bvid}.shownotes.txt`);
       span.set({ mergedAudioPath, shownotesPath });
