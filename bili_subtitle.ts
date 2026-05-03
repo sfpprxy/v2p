@@ -1,7 +1,12 @@
 import { $ } from "bun";
 import { resolve } from "node:path";
 
-import { buildBiliPartFileStem } from "./bili_utils";
+import {
+  buildBiliPartFileStem,
+  createTempBiliCookieFile,
+  formatBrowserCookieSource,
+  getBrowserCookieSource,
+} from "./bili_utils";
 import { type BiliVideoPart } from "./bili_video";
 import { buildExternalCommandErrorMessage } from "./external_tools";
 import { runSubtitleDownloadLimited } from "./limits";
@@ -37,6 +42,7 @@ export async function downloadSubtitle(
   browser = DEFAULT_BROWSER,
   shouldLog = false,
 ): Promise<string> {
+  const cookieSource = getBrowserCookieSource(browser);
   const outputTemplate = resolve(
     outputDir,
     `${buildBiliPartFileStem(videoPart)}.%(ext)s`,
@@ -58,6 +64,7 @@ export async function downloadSubtitle(
     },
     async (span) => {
       let succeeded = false;
+      let cookieFilePath: string | null = null;
 
       if (shouldLog) {
         console.log(`[downloadSubtitle:start] ${subtitlePath}`);
@@ -75,6 +82,14 @@ export async function downloadSubtitle(
       span.set({ cacheHit: false, browser });
       try {
         try {
+          cookieFilePath = await createTempBiliCookieFile();
+          const cookieArgs =
+            cookieFilePath !== null
+              ? ["--cookies", cookieFilePath]
+              : [
+                  "--cookies-from-browser",
+                  formatBrowserCookieSource(cookieSource),
+                ];
           await runSubtitleDownloadLimited(() =>
             profileSpan(
               "downloadSubtitle.ytDlp",
@@ -82,11 +97,14 @@ export async function downloadSubtitle(
                 bvid: videoPart.bvid,
                 page: videoPart.page,
                 browser,
+                cookieSource:
+                  cookieFilePath !== null
+                    ? "env"
+                    : formatBrowserCookieSource(cookieSource),
               },
               async () => {
                 await $`yt-dlp ${[
-                  "--cookies-from-browser",
-                  browser,
+                  ...cookieArgs,
                   "--write-subs",
                   "--sub-langs",
                   DEFAULT_SUBTITLE_LANG,
@@ -114,6 +132,9 @@ export async function downloadSubtitle(
 
         succeeded = true;
       } finally {
+        if (cookieFilePath !== null) {
+          await Bun.file(cookieFilePath).delete().catch(() => {});
+        }
         if (shouldLog) {
           console.log(
             `[downloadSubtitle:end] ${succeeded ? "ok" : "error"} ${subtitlePath}`,

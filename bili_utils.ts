@@ -1,6 +1,7 @@
 import { $ } from "bun";
+import { existsSync } from "node:fs";
 import { Client } from "@renmu/bili-api";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { type BiliVideoPart } from "./bili_video";
 
 export interface BiliCookieMap {
@@ -13,16 +14,24 @@ export interface BiliCookieMap {
   [key: string]: string | undefined;
 }
 
+export interface BrowserCookieSource {
+  browser: string;
+  profile?: string;
+}
+
+const DEFAULT_BROWSER = "chrome";
+
 export async function syncBiliCookieFromBrowser(
-  browser = "chrome",
+  browser = DEFAULT_BROWSER,
   envPath = ".env",
 ): Promise<{ cookie: string; missingKeys: string[] }> {
+  const cookieSource = getBrowserCookieSource(browser);
   const cookiePath = resolve(`.bilibili.${Date.now()}.cookies.txt`);
 
   try {
     await $`yt-dlp ${[
       "--cookies-from-browser",
-      browser,
+      formatBrowserCookieSource(cookieSource),
       "--cookies",
       cookiePath,
       "--skip-download",
@@ -121,6 +130,35 @@ export function buildBiliClient(): Client {
   return client;
 }
 
+export function getBrowserCookieSource(
+  fallbackBrowser = DEFAULT_BROWSER,
+): BrowserCookieSource {
+  const browser =
+    process.env.BILIBILI_COOKIE_BROWSER?.trim() || fallbackBrowser;
+  const envProfile =
+    process.env.BILIBILI_COOKIE_BROWSER_PROFILE?.trim() ||
+    process.env.BILIBILI_COOKIE_BROWSER_PATH?.trim();
+
+  if (!envProfile) {
+    return { browser };
+  }
+
+  return {
+    browser,
+    profile: normalizeBrowserProfilePath(envProfile),
+  };
+}
+
+export function formatBrowserCookieSource({
+  browser,
+  profile,
+}: BrowserCookieSource): string {
+  if (!profile) {
+    return browser;
+  }
+  return `${browser}:${profile}`;
+}
+
 export function buildBiliCookie(): BiliCookieMap | null {
   const rawCookie = process.env.BILIBILI_COOKIE?.trim() ?? "";
   if (rawCookie) {
@@ -142,6 +180,33 @@ export function buildBiliCookie(): BiliCookieMap | null {
   }
 
   return cookie;
+}
+
+export async function createTempBiliCookieFile(): Promise<string | null> {
+  const cookie = buildBiliCookie();
+  if (cookie === null) {
+    return null;
+  }
+
+  const cookieEntries = Object.entries(cookie).filter(
+    ([, value]) => typeof value === "string" && value.length > 0,
+  );
+  if (cookieEntries.length === 0) {
+    return null;
+  }
+
+  const cookiePath = resolve(`.bilibili.yt-dlp.${Date.now()}.cookies.txt`);
+  const expiresAt = "2147483647";
+  const rows = [
+    "# Netscape HTTP Cookie File",
+    ...cookieEntries.map(
+      ([key, value]) =>
+        `.bilibili.com\tTRUE\t/\tTRUE\t${expiresAt}\t${key}\t${value ?? ""}`,
+    ),
+    "",
+  ];
+  await Bun.write(cookiePath, rows.join("\n"));
+  return cookiePath;
 }
 
 export function buildBiliPartFileStem(part: BiliVideoPart): string {
@@ -172,7 +237,27 @@ export function parseRawCookie(rawCookie: string): BiliCookieMap {
   return cookieItems;
 }
 
+function normalizeBrowserProfilePath(rawPath: string): string {
+  const trimmed = rawPath.trim().replace(/^["']|["']$/g, "");
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  const normalizedPath = resolve(trimmed);
+  if (!normalizedPath.toLowerCase().endsWith(".exe")) {
+    return normalizedPath;
+  }
+
+  const browserDir = dirname(normalizedPath);
+  const siblingUserDataDir = resolve(browserDir, "User Data");
+  if (existsSync(siblingUserDataDir)) {
+    return siblingUserDataDir;
+  }
+
+  return browserDir;
+}
+
 if (import.meta.main) {
-  const result = await syncBiliCookieFromBrowser("chrome");
+  const result = await syncBiliCookieFromBrowser();
   console.log(result);
 }
