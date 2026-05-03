@@ -76,6 +76,7 @@ async function runClipping(
       const client = buildBiliClient();
       const store = ScboyVideoStore.open();
       try {
+        await store.saveLatestVideos(client);
         const listedVideos = store.listVideos(dateInTitle);
         const videos = filterScboyClippableVideos(listedVideos);
         if (listedVideos.length !== videos.length) {
