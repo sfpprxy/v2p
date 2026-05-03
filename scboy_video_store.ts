@@ -320,7 +320,7 @@ export function isDateValue(value: string): boolean {
 }
 
 if (import.meta.main) {
-  const client = buildBiliClient();
+  const client = await buildBiliClient();
   const store = ScboyVideoStore.open();
   await store.saveLatestVideos(client);
 }

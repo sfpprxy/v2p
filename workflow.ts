@@ -74,7 +74,7 @@ async function runClipping(
         console.log(`[profile] ${profileOutputPath}`);
       }
 
-      const client = buildBiliClient();
+      const client = await buildBiliClient();
       const store = ScboyVideoStore.open();
       try {
         await store.saveVideosForDateInTitle(client, dateInTitle);

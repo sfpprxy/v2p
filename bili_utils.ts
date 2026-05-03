@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { Client } from "@renmu/bili-api";
 import { dirname, resolve } from "node:path";
 import { type BiliVideoPart } from "./bili_video";
@@ -20,11 +21,21 @@ export interface BrowserCookieSource {
 }
 
 const DEFAULT_BROWSER = "chrome";
+const DEFAULT_COOKIE_TTL_HOURS = 24;
+const DEFAULT_ENV_PATH = ".env";
+const COOKIE_REFRESHED_AT_KEY = "BILIBILI_COOKIE_REFRESHED_AT";
+const COOKIE_TTL_HOURS_KEY = "BILIBILI_COOKIE_TTL_HOURS";
+const DEFAULT_COOKIE_EXPORT_FILE = "bilibili.cookies.txt";
 
 export async function syncBiliCookieFromBrowser(
   browser = DEFAULT_BROWSER,
-  envPath = ".env",
+  envPath = DEFAULT_ENV_PATH,
 ): Promise<{ cookie: string; missingKeys: string[] }> {
+  const exportPath = getDefaultBrowserCookieExportPath();
+  if (exportPath !== null) {
+    return syncBiliCookieFromFile(exportPath, envPath);
+  }
+
   const cookieSource = getBrowserCookieSource(browser);
   const cookiePath = resolve(`.bilibili.${Date.now()}.cookies.txt`);
 
@@ -75,36 +86,18 @@ export async function syncBiliCookieFromBrowser(
       throw new Error(`No bilibili.com cookie found in ${cookiePath}`);
     }
 
-    const cookie = Array.from(cookieMap.entries())
-      .map(([key, value]) => `${key}=${value}`)
-      .join("; ");
-    const parsedCookie = parseRawCookie(cookie);
-    const missingKeys = ["SESSDATA", "bili_jct", "DedeUserID"].filter(
-      (key) => !parsedCookie[key],
+    return persistBiliCookie(
+      buildRawCookieFromMap(cookieMap),
+      envPath,
     );
-
-    const envFile = Bun.file(envPath);
-    let envText = "";
-    if (await envFile.exists()) {
-      envText = await envFile.text();
-    }
-
-    const line = `BILIBILI_COOKIE=${cookie}`;
-    const updatedEnv = /^BILIBILI_COOKIE=.*$/m.test(envText)
-      ? envText.replace(/^BILIBILI_COOKIE=.*$/m, line)
-      : `${envText}${envText.endsWith("\n") || envText.length === 0 ? "" : "\n"}${line}\n`;
-
-    await Bun.write(envPath, updatedEnv);
-
-    return { cookie, missingKeys };
   } finally {
     await Bun.file(cookiePath).delete().catch(() => {});
   }
 }
 
-export function buildBiliClient(): Client {
+export async function buildBiliClient(): Promise<Client> {
   const client = new Client();
-  const cookie = buildBiliCookie();
+  const cookie = await getBiliCookie();
   if (!cookie) {
     return client;
   }
@@ -149,6 +142,11 @@ export function getBrowserCookieSource(
   };
 }
 
+export function getDefaultBrowserCookieExportPath(): string | null {
+  const defaultPath = resolve(tmpdir(), DEFAULT_COOKIE_EXPORT_FILE);
+  return existsSync(defaultPath) ? defaultPath : null;
+}
+
 export function formatBrowserCookieSource({
   browser,
   profile,
@@ -159,7 +157,7 @@ export function formatBrowserCookieSource({
   return `${browser}:${profile}`;
 }
 
-export function buildBiliCookie(): BiliCookieMap | null {
+export function parseBiliCookieFromEnv(): BiliCookieMap | null {
   const rawCookie = process.env.BILIBILI_COOKIE?.trim() ?? "";
   if (rawCookie) {
     return parseRawCookie(rawCookie);
@@ -182,8 +180,28 @@ export function buildBiliCookie(): BiliCookieMap | null {
   return cookie;
 }
 
+export async function getBiliCookie(): Promise<BiliCookieMap | null> {
+  const cachedCookie = parseBiliCookieFromEnv();
+  if (shouldRefreshBiliCookie()) {
+    try {
+      await syncBiliCookieFromBrowser();
+    } catch (error) {
+      if (cachedCookie !== null) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[bili_cookie] refresh failed, using cached cookie from .env: ${message}`,
+        );
+        return cachedCookie;
+      }
+      throw buildBrowserCookieRefreshError(error);
+    }
+  }
+
+  return parseBiliCookieFromEnv();
+}
+
 export async function createTempBiliCookieFile(): Promise<string | null> {
-  const cookie = buildBiliCookie();
+  const cookie = await getBiliCookie();
   if (cookie === null) {
     return null;
   }
@@ -255,6 +273,169 @@ function normalizeBrowserProfilePath(rawPath: string): string {
   }
 
   return browserDir;
+}
+
+function buildBrowserCookieRefreshError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    [
+      "Failed to refresh bilibili cookie from browser profile.",
+      `Prefer exporting a browser cookies.txt file to ${resolve(tmpdir(), DEFAULT_COOKIE_EXPORT_FILE)} so refresh still works while the browser is running.`,
+      "If the browser is running, close it and retry; yt-dlp could not copy the cookie database.",
+      message,
+    ].join("\n"),
+  );
+}
+
+function shouldRefreshBiliCookie(now = Date.now()): boolean {
+  const rawCookie = process.env.BILIBILI_COOKIE?.trim() ?? "";
+  if (!rawCookie) {
+    return true;
+  }
+
+  const refreshedAtText = process.env[COOKIE_REFRESHED_AT_KEY]?.trim() ?? "";
+  if (!refreshedAtText) {
+    return true;
+  }
+
+  const refreshedAtMs = Date.parse(refreshedAtText);
+  if (Number.isNaN(refreshedAtMs)) {
+    return true;
+  }
+
+  return now - refreshedAtMs >= getBiliCookieTtlMs();
+}
+
+function getBiliCookieTtlMs(): number {
+  const rawTtlHours = process.env[COOKIE_TTL_HOURS_KEY]?.trim() ?? "";
+  const ttlHours = Number(rawTtlHours);
+  if (!Number.isFinite(ttlHours) || ttlHours <= 0) {
+    return DEFAULT_COOKIE_TTL_HOURS * 60 * 60 * 1000;
+  }
+
+  return ttlHours * 60 * 60 * 1000;
+}
+
+async function writeEnvAssignments(
+  envPath: string,
+  assignments: Record<string, string>,
+): Promise<void> {
+  const envFile = Bun.file(envPath);
+  let envText = "";
+  if (await envFile.exists()) {
+    envText = await envFile.text();
+  }
+
+  let nextEnvText = envText;
+  for (const [key, value] of Object.entries(assignments)) {
+    const escapedValue = escapeEnvValue(value);
+    const line = `${key}=${escapedValue}`;
+    const matcher = new RegExp(`^${escapeRegExp(key)}=.*$`, "m");
+    nextEnvText = matcher.test(nextEnvText)
+      ? nextEnvText.replace(matcher, line)
+      : `${nextEnvText}${nextEnvText.endsWith("\n") || nextEnvText.length === 0 ? "" : "\n"}${line}\n`;
+  }
+
+  await Bun.write(envPath, nextEnvText);
+}
+
+function escapeEnvValue(value: string): string {
+  return value.replace(/\r?\n/g, " ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function syncBiliCookieFromFile(
+  cookieFilePath: string,
+  envPath: string,
+): Promise<{ cookie: string; missingKeys: string[] }> {
+  const cookieText = await Bun.file(cookieFilePath).text();
+  const parsedCookie = parseCookieFile(cookieText, cookieFilePath);
+  return persistBiliCookie(
+    buildRawCookieFromMap(new Map(Object.entries(parsedCookie))),
+    envPath,
+  );
+}
+
+async function persistBiliCookie(
+  cookie: string,
+  envPath: string,
+): Promise<{ cookie: string; missingKeys: string[] }> {
+  const parsedCookie = parseRawCookie(cookie);
+  const missingKeys = ["SESSDATA", "bili_jct", "DedeUserID"].filter(
+    (key) => !parsedCookie[key],
+  );
+  const refreshedAt = new Date().toISOString();
+  await writeEnvAssignments(envPath, {
+    BILIBILI_COOKIE: cookie,
+    [COOKIE_REFRESHED_AT_KEY]: refreshedAt,
+  });
+  process.env.BILIBILI_COOKIE = cookie;
+  process.env[COOKIE_REFRESHED_AT_KEY] = refreshedAt;
+  return { cookie, missingKeys };
+}
+
+function parseCookieFile(
+  cookieText: string,
+  cookieFilePath: string,
+): BiliCookieMap {
+  const normalizedCookieText = cookieText.replace(/^\uFEFF/u, "");
+  const parsedFromNetscape = parseNetscapeCookieFile(normalizedCookieText);
+  if (Object.keys(parsedFromNetscape).length > 0) {
+    return parsedFromNetscape;
+  }
+
+  const parsedFromRawCookie = parseRawCookie(normalizedCookieText.trim());
+  if (Object.keys(parsedFromRawCookie).length > 0) {
+    return parsedFromRawCookie;
+  }
+
+  throw new Error(
+    `No bilibili.com cookie found in ${cookieFilePath}. Expected Netscape cookies.txt content or a raw Cookie header.`,
+  );
+}
+
+function parseNetscapeCookieFile(cookieText: string): BiliCookieMap {
+  const cookieMap = new Map<string, string>();
+
+  for (const line of cookieText.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (
+      !trimmed ||
+      (trimmed.startsWith("#") && !trimmed.startsWith("#HttpOnly_"))
+    ) {
+      continue;
+    }
+
+    const columns = trimmed.split("\t");
+    if (columns.length < 7) {
+      continue;
+    }
+
+    let domain = columns[0];
+    if (domain.startsWith("#HttpOnly_")) {
+      domain = domain.slice("#HttpOnly_".length);
+    }
+    if (!domain.includes("bilibili.com")) {
+      continue;
+    }
+
+    const key = columns[5]?.trim() ?? "";
+    if (!key) {
+      continue;
+    }
+    cookieMap.set(key, columns[6] ?? "");
+  }
+
+  return Object.fromEntries(cookieMap.entries());
+}
+
+function buildRawCookieFromMap(cookieMap: Map<string, string>): string {
+  return Array.from(cookieMap.entries())
+    .map(([key, value]) => `${key}=${value}`)
+    .join("; ");
 }
 
 if (import.meta.main) {
