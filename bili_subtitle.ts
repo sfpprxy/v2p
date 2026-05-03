@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { buildBiliPartFileStem } from "./bili_utils";
 import { type BiliVideoPart } from "./bili_video";
+import { buildExternalCommandErrorMessage } from "./external_tools";
 import { runSubtitleDownloadLimited } from "./limits";
 import { profileSpan } from "./perf";
 
@@ -99,7 +100,7 @@ export async function downloadSubtitle(
           );
         } catch (error) {
           throw new Error(
-            `Failed to download subtitle for ${partLabel}: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to download subtitle for ${partLabel}: ${buildExternalCommandErrorMessage("yt-dlp", error)}`,
           );
         }
 

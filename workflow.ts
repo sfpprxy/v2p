@@ -5,6 +5,7 @@ import { $ } from "bun";
 import chalk from "chalk";
 import { buildBiliClient } from "./bili_utils";
 import { BiliVideo, BiliVideoPart } from "./bili_video";
+import { ensureExternalToolsAvailable } from "./external_tools";
 import { getProfileOutputPath, profileSpan } from "./perf";
 import { stageEpisodes } from "./podcast";
 import {
@@ -302,6 +303,8 @@ function buildWorkflowProgressItems(
 }
 
 if (import.meta.main) {
+  await ensureExternalToolsAvailable(["yt-dlp", "ffmpeg", "ffprobe"]);
+
   const modelArgs: string[] = [];
   const dateArgs: string[] = [];
   let rerun = false;
