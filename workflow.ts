@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { $ } from "bun";
@@ -7,7 +7,7 @@ import { buildBiliClient } from "./bili_utils";
 import { BiliVideo, BiliVideoPart } from "./bili_video";
 import { ensureExternalToolsAvailable } from "./external_tools";
 import { getProfileOutputPath, profileSpan } from "./perf";
-import { stageEpisodes } from "./podcast";
+import { rebuildPodcastSite, stageEpisodes } from "./podcast";
 import {
   createProgressDisplay,
   updateProgressBars,
@@ -38,8 +38,11 @@ import { ScboyVideoStore, isDateValue } from "./scboy_video_store";
 
 const PROJECT_ROOT = import.meta.dir;
 export const OUTPUT_ROOT = resolve(PROJECT_ROOT, "output");
+const PODCAST_EPISODES_ROOT = resolve(PROJECT_ROOT, "podcast", "episodes");
 const PODCAST_RELEASE_PATHS = ["podcast/episodes"];
 const FINISHED_CLIPPING_PART_PROGRESS_VISIBLE_MS = 2000;
+const OUTPUT_DIRECTORY_DATE_PATTERN = /^(\d{2})-(\d{2})-/u;
+const PODCAST_EPISODE_FILENAME_PATTERN = /^(\d{2})(\d{2})-\d+\.json$/u;
 
 interface ClippingSource {
   video: BiliVideo;
@@ -348,6 +351,11 @@ if (import.meta.main) {
       throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
   }
 
+  const cutoffDate = getWorkflowCutoffDate(dateArgs);
+  if (cutoffDate !== null) {
+    purgeGeneratedDataAfterDate(cutoffDate);
+  }
+
   const clippingResults = await runClipping(
     llmModel,
     runOptions,
@@ -358,6 +366,120 @@ if (import.meta.main) {
     forceUpload: runOptions.forcePodcastUpload,
   });
   await publishPodcastRelease(podcastStageInputs);
+}
+
+function getWorkflowCutoffDate(dateArgs: readonly string[]): Date | null {
+  if (dateArgs.length === 0) {
+    return null;
+  }
+
+  const parsedDates = dateArgs.map((value) => new Date(`${value}T00:00:00`));
+  return parsedDates.reduce((latest, current) =>
+    current.getTime() > latest.getTime() ? current : latest,
+  );
+}
+
+function purgeGeneratedDataAfterDate(cutoffDate: Date): void {
+  const cutoffLabel = cutoffDate.toISOString().slice(0, 10);
+  const removedOutputDirectories = purgeOutputDirectoriesAfterDate(cutoffDate);
+  const removedPodcastEpisodeManifests =
+    purgePodcastEpisodeManifestsAfterDate(cutoffDate);
+  rebuildPodcastSite();
+
+  console.log(
+    [
+      `[workflow] purged generated data after ${cutoffLabel}`,
+      `output directories: ${removedOutputDirectories}`,
+      `podcast manifests: ${removedPodcastEpisodeManifests}`,
+      "podcast site rebuilt",
+    ].join(", "),
+  );
+}
+
+function purgeOutputDirectoriesAfterDate(cutoffDate: Date): number {
+  if (!existsSync(OUTPUT_ROOT)) {
+    return 0;
+  }
+
+  let removedCount = 0;
+  for (const yearEntry of readdirSync(OUTPUT_ROOT, { withFileTypes: true })) {
+    if (!yearEntry.isDirectory() || !/^\d{4}$/u.test(yearEntry.name)) {
+      continue;
+    }
+    const yearDirectoryPath = resolve(OUTPUT_ROOT, yearEntry.name);
+    for (const outputEntry of readdirSync(yearDirectoryPath, { withFileTypes: true })) {
+      if (!outputEntry.isDirectory()) {
+        continue;
+      }
+      const outputDate = parseOutputDirectoryDate(yearEntry.name, outputEntry.name);
+      if (outputDate === null || outputDate.getTime() <= cutoffDate.getTime()) {
+        continue;
+      }
+      rmSync(resolve(yearDirectoryPath, outputEntry.name), {
+        recursive: true,
+        force: true,
+      });
+      removedCount += 1;
+    }
+    if (readdirSync(yearDirectoryPath).length === 0) {
+      rmSync(yearDirectoryPath, { recursive: true, force: true });
+    }
+  }
+  return removedCount;
+}
+
+function purgePodcastEpisodeManifestsAfterDate(cutoffDate: Date): number {
+  if (!existsSync(PODCAST_EPISODES_ROOT)) {
+    return 0;
+  }
+
+  let removedCount = 0;
+  for (const yearEntry of readdirSync(PODCAST_EPISODES_ROOT, { withFileTypes: true })) {
+    if (!yearEntry.isDirectory() || !/^\d{4}$/u.test(yearEntry.name)) {
+      continue;
+    }
+    const yearDirectoryPath = resolve(PODCAST_EPISODES_ROOT, yearEntry.name);
+    for (const manifestEntry of readdirSync(yearDirectoryPath, { withFileTypes: true })) {
+      if (!manifestEntry.isFile()) {
+        continue;
+      }
+      const manifestDate = parsePodcastEpisodeManifestDate(
+        yearEntry.name,
+        manifestEntry.name,
+      );
+      if (manifestDate === null || manifestDate.getTime() <= cutoffDate.getTime()) {
+        continue;
+      }
+      rmSync(resolve(yearDirectoryPath, manifestEntry.name), { force: true });
+      removedCount += 1;
+    }
+    if (readdirSync(yearDirectoryPath).length === 0) {
+      rmSync(yearDirectoryPath, { recursive: true, force: true });
+    }
+  }
+  return removedCount;
+}
+
+function parseOutputDirectoryDate(
+  year: string,
+  directoryName: string,
+): Date | null {
+  const match = directoryName.match(OUTPUT_DIRECTORY_DATE_PATTERN);
+  if (match === null) {
+    return null;
+  }
+  return new Date(`${year}-${match[1]}-${match[2]}T00:00:00`);
+}
+
+function parsePodcastEpisodeManifestDate(
+  year: string,
+  filename: string,
+): Date | null {
+  const match = filename.match(PODCAST_EPISODE_FILENAME_PATTERN);
+  if (match === null) {
+    return null;
+  }
+  return new Date(`${year}-${match[1]}-${match[2]}T00:00:00`);
 }
 
 interface PodcastStageProgressItemState {

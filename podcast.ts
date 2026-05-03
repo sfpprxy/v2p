@@ -275,6 +275,10 @@ function buildPodcastSite(
   );
 }
 
+export function rebuildPodcastSite(): void {
+  buildPodcastSite(loadPodcastConfig(), loadEpisodeManifests());
+}
+
 function loadPodcastConfig(): PodcastConfig {
   if (!existsSync(PODCAST_CONFIG_PATH)) {
     throw new Error(
