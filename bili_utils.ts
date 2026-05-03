@@ -26,6 +26,13 @@ const DEFAULT_ENV_PATH = ".env";
 const COOKIE_REFRESHED_AT_KEY = "BILIBILI_COOKIE_REFRESHED_AT";
 const COOKIE_TTL_HOURS_KEY = "BILIBILI_COOKIE_TTL_HOURS";
 const DEFAULT_COOKIE_EXPORT_FILE = "bilibili.cookies.txt";
+const BILI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav";
+
+type CookieValidationState = "valid" | "invalid" | "unknown";
+
+let cachedCookieValidation:
+  | Promise<{ state: CookieValidationState; reason?: string }>
+  | null = null;
 
 export async function syncBiliCookieFromBrowser(
   browser = DEFAULT_BROWSER,
@@ -182,16 +189,28 @@ export function parseBiliCookieFromEnv(): BiliCookieMap | null {
 
 export async function getBiliCookie(): Promise<BiliCookieMap | null> {
   const cachedCookie = parseBiliCookieFromEnv();
-  if (shouldRefreshBiliCookie()) {
+  const shouldRefreshByTtl = shouldRefreshBiliCookie();
+  const validation =
+    cachedCookie === null
+      ? { state: "invalid" as const, reason: "Missing cached bilibili cookie." }
+      : await validateBiliCookieOnce(cachedCookie);
+  const shouldRefreshByValidation = validation.state === "invalid";
+
+  if (shouldRefreshByTtl || shouldRefreshByValidation) {
+    if (shouldRefreshByValidation && validation.reason) {
+      console.warn(`[bili_cookie] cached cookie is not logged in: ${validation.reason}`);
+    }
     try {
       await syncBiliCookieFromBrowser();
     } catch (error) {
       if (cachedCookie !== null) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `[bili_cookie] refresh failed, using cached cookie from .env: ${message}`,
-        );
-        return cachedCookie;
+        if (validation.state === "valid" || validation.state === "unknown") {
+          console.warn(
+            `[bili_cookie] refresh failed, using cached cookie from .env: ${message}`,
+          );
+          return cachedCookie;
+        }
       }
       throw buildBrowserCookieRefreshError(error);
     }
@@ -374,6 +393,7 @@ async function persistBiliCookie(
   });
   process.env.BILIBILI_COOKIE = cookie;
   process.env[COOKIE_REFRESHED_AT_KEY] = refreshedAt;
+  cachedCookieValidation = null;
   return { cookie, missingKeys };
 }
 
@@ -436,6 +456,68 @@ function buildRawCookieFromMap(cookieMap: Map<string, string>): string {
   return Array.from(cookieMap.entries())
     .map(([key, value]) => `${key}=${value}`)
     .join("; ");
+}
+
+async function validateBiliCookieOnce(
+  cookie: BiliCookieMap,
+): Promise<{ state: CookieValidationState; reason?: string }> {
+  cachedCookieValidation ??= validateBiliCookie(cookie);
+  return cachedCookieValidation;
+}
+
+async function validateBiliCookie(
+  cookie: BiliCookieMap,
+): Promise<{ state: CookieValidationState; reason?: string }> {
+  const rawCookie = buildRawCookieFromMap(
+    new Map(
+      Object.entries(cookie).filter(
+        ([, value]) => typeof value === "string" && value.length > 0,
+      ) as [string, string][],
+    ),
+  );
+  if (!rawCookie) {
+    return { state: "invalid", reason: "Cookie string is empty." };
+  }
+
+  try {
+    const response = await fetch(BILI_NAV_URL, {
+      headers: {
+        cookie: rawCookie,
+        referer: "https://www.bilibili.com/",
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+      },
+    });
+    if (!response.ok) {
+      return {
+        state: "unknown",
+        reason: `Validation request failed with HTTP ${response.status}.`,
+      };
+    }
+
+    const payload = await response.json() as {
+      code?: number;
+      message?: string;
+      data?: { isLogin?: boolean; uname?: string };
+    };
+    if (payload.code !== 0) {
+      return {
+        state: "invalid",
+        reason: payload.message || `nav returned code ${payload.code ?? "unknown"}.`,
+      };
+    }
+
+    if (payload.data?.isLogin === true) {
+      return { state: "valid" };
+    }
+
+    return { state: "invalid", reason: "nav returned isLogin=false." };
+  } catch (error) {
+    return {
+      state: "unknown",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 if (import.meta.main) {
