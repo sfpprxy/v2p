@@ -27,8 +27,10 @@ const COOKIE_REFRESHED_AT_KEY = "BILIBILI_COOKIE_REFRESHED_AT";
 const COOKIE_TTL_HOURS_KEY = "BILIBILI_COOKIE_TTL_HOURS";
 const DEFAULT_COOKIE_EXPORT_FILE = "bilibili.cookies.txt";
 const BILI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav";
+const DEFAULT_BROWSER_DEBUG_VERSION_URL = "http://127.0.0.1:9222/json/version";
 
 type CookieValidationState = "valid" | "invalid" | "unknown";
+type CookieRefreshAttempt = { source: string; reason: string };
 
 let cachedCookieValidation:
   | Promise<{ state: CookieValidationState; reason?: string }>
@@ -38,68 +40,41 @@ export async function syncBiliCookieFromBrowser(
   browser = DEFAULT_BROWSER,
   envPath = DEFAULT_ENV_PATH,
 ): Promise<{ cookie: string; missingKeys: string[] }> {
+  const attempts: CookieRefreshAttempt[] = [];
+  const cdpResult = await tryRefreshBiliCookie(
+    "browser remote debugging",
+    syncBiliCookieFromRemoteDebugging,
+    envPath,
+    attempts,
+  );
+  if (cdpResult !== null) {
+    return cdpResult;
+  }
+
   const exportPath = getDefaultBrowserCookieExportPath();
   if (exportPath !== null) {
-    return syncBiliCookieFromFile(exportPath, envPath);
-  }
-
-  const cookieSource = getBrowserCookieSource(browser);
-  const cookiePath = resolve(`.bilibili.${Date.now()}.cookies.txt`);
-
-  try {
-    await $`yt-dlp ${[
-      "--cookies-from-browser",
-      formatBrowserCookieSource(cookieSource),
-      "--cookies",
-      cookiePath,
-      "--skip-download",
-      "--simulate",
-      "https://www.bilibili.com/video/BV1ffF4zoEmH",
-    ]}`.quiet();
-
-    const netscape = await Bun.file(cookiePath).text();
-    const cookieMap = new Map<string, string>();
-
-    for (const line of netscape.split("\n")) {
-      const trimmed = line.trim();
-      if (
-        !trimmed ||
-        (trimmed.startsWith("#") && !trimmed.startsWith("#HttpOnly_"))
-      ) {
-        continue;
-      }
-
-      const columns = trimmed.split("\t");
-      if (columns.length < 7) {
-        continue;
-      }
-
-      let domain = columns[0];
-      if (domain.startsWith("#HttpOnly_")) {
-        domain = domain.slice("#HttpOnly_".length);
-      }
-      if (!domain.includes("bilibili.com")) {
-        continue;
-      }
-
-      const key = columns[5]?.trim() ?? "";
-      if (!key) {
-        continue;
-      }
-      cookieMap.set(key, columns[6] ?? "");
-    }
-
-    if (cookieMap.size === 0) {
-      throw new Error(`No bilibili.com cookie found in ${cookiePath}`);
-    }
-
-    return persistBiliCookie(
-      buildRawCookieFromMap(cookieMap),
+    const result = await tryRefreshBiliCookie(
+      `export file ${exportPath}`,
+      async () => syncBiliCookieFromFile(exportPath),
       envPath,
+      attempts,
     );
-  } finally {
-    await Bun.file(cookiePath).delete().catch(() => {});
+    if (result !== null) {
+      return result;
+    }
   }
+
+  const result = await tryRefreshBiliCookie(
+    "yt-dlp --cookies-from-browser",
+    async () => syncBiliCookieFromYtDlp(browser),
+    envPath,
+    attempts,
+  );
+  if (result !== null) {
+    return result;
+  }
+
+  throw buildBrowserCookieRefreshError(attempts);
 }
 
 export async function buildBiliClient(): Promise<Client> {
@@ -212,7 +187,7 @@ export async function getBiliCookie(): Promise<BiliCookieMap | null> {
           return cachedCookie;
         }
       }
-      throw buildBrowserCookieRefreshError(error);
+      throw error;
     }
   }
 
@@ -294,14 +269,21 @@ function normalizeBrowserProfilePath(rawPath: string): string {
   return browserDir;
 }
 
-function buildBrowserCookieRefreshError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
+function buildBrowserCookieRefreshError(
+  attempts: readonly CookieRefreshAttempt[],
+): Error {
+  const detailLines =
+    attempts.length === 0
+      ? ["No refresh source was available."]
+      : attempts.map(
+          ({ source, reason }, index) => `${index + 1}. ${source}: ${reason}`,
+        );
   return new Error(
     [
       "Failed to refresh bilibili cookie from browser profile.",
       `Prefer exporting a browser cookies.txt file to ${resolve(tmpdir(), DEFAULT_COOKIE_EXPORT_FILE)} so refresh still works while the browser is running.`,
       "If the browser is running, close it and retry; yt-dlp could not copy the cookie database.",
-      message,
+      ...detailLines,
     ].join("\n"),
   );
 }
@@ -368,14 +350,149 @@ function escapeRegExp(value: string): string {
 
 async function syncBiliCookieFromFile(
   cookieFilePath: string,
-  envPath: string,
-): Promise<{ cookie: string; missingKeys: string[] }> {
+): Promise<string> {
   const cookieText = await Bun.file(cookieFilePath).text();
   const parsedCookie = parseCookieFile(cookieText, cookieFilePath);
-  return persistBiliCookie(
-    buildRawCookieFromMap(new Map(Object.entries(parsedCookie))),
-    envPath,
-  );
+  return buildRawCookieFromMap(new Map(Object.entries(parsedCookie)));
+}
+
+async function syncBiliCookieFromRemoteDebugging(): Promise<string> {
+  const versionResponse = await fetch(DEFAULT_BROWSER_DEBUG_VERSION_URL);
+  if (!versionResponse.ok) {
+    throw new Error(
+      `Cannot query browser debug endpoint ${DEFAULT_BROWSER_DEBUG_VERSION_URL}: HTTP ${versionResponse.status}.`,
+    );
+  }
+
+  const versionPayload = await versionResponse.json() as {
+    webSocketDebuggerUrl?: string;
+  };
+  const webSocketDebuggerUrl =
+    versionPayload.webSocketDebuggerUrl?.trim() ?? "";
+  if (!webSocketDebuggerUrl) {
+    throw new Error(
+      `Browser debug endpoint ${DEFAULT_BROWSER_DEBUG_VERSION_URL} did not return webSocketDebuggerUrl.`,
+    );
+  }
+
+  const cdpPayload = await new Promise<{ result?: { cookies?: Array<{
+    name?: string;
+    value?: string;
+    domain?: string;
+  }> } }>((resolve, reject) => {
+    const socket = new WebSocket(webSocketDebuggerUrl);
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error("Timed out while reading cookies from browser remote debugging."));
+    }, 15_000);
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ id: 1, method: "Storage.getCookies" }));
+    };
+    socket.onmessage = (event) => {
+      const message = JSON.parse(String(event.data)) as {
+        id?: number;
+        result?: { cookies?: Array<{ name?: string; value?: string; domain?: string }> };
+        error?: { message?: string };
+      };
+      if (message.id !== 1) {
+        return;
+      }
+      clearTimeout(timer);
+      socket.close();
+      if (message.error) {
+        reject(
+          new Error(
+            message.error.message ||
+              "Browser remote debugging returned an unknown error.",
+          ),
+        );
+        return;
+      }
+      resolve(message);
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("Browser remote debugging websocket failed."));
+    };
+  });
+
+  const cookieMap = new Map<string, string>();
+  for (const cookie of cdpPayload.result?.cookies ?? []) {
+    if (!String(cookie.domain ?? "").includes("bilibili.com")) {
+      continue;
+    }
+    const name = cookie.name?.trim() ?? "";
+    if (!name) {
+      continue;
+    }
+    cookieMap.set(name, cookie.value ?? "");
+  }
+
+  if (cookieMap.size === 0) {
+    throw new Error(
+      "Browser remote debugging returned no bilibili.com cookies.",
+    );
+  }
+
+  return buildRawCookieFromMap(cookieMap);
+}
+
+async function syncBiliCookieFromYtDlp(browser: string): Promise<string> {
+  const cookieSource = getBrowserCookieSource(browser);
+  const cookiePath = resolve(`.bilibili.${Date.now()}.cookies.txt`);
+
+  try {
+    await $`yt-dlp ${[
+      "--cookies-from-browser",
+      formatBrowserCookieSource(cookieSource),
+      "--cookies",
+      cookiePath,
+      "--skip-download",
+      "--simulate",
+      "https://www.bilibili.com/video/BV1ffF4zoEmH",
+    ]}`.quiet();
+
+    const netscape = await Bun.file(cookiePath).text();
+    const cookieMap = new Map<string, string>();
+
+    for (const line of netscape.split("\n")) {
+      const trimmed = line.trim();
+      if (
+        !trimmed ||
+        (trimmed.startsWith("#") && !trimmed.startsWith("#HttpOnly_"))
+      ) {
+        continue;
+      }
+
+      const columns = trimmed.split("\t");
+      if (columns.length < 7) {
+        continue;
+      }
+
+      let domain = columns[0];
+      if (domain.startsWith("#HttpOnly_")) {
+        domain = domain.slice("#HttpOnly_".length);
+      }
+      if (!domain.includes("bilibili.com")) {
+        continue;
+      }
+
+      const key = columns[5]?.trim() ?? "";
+      if (!key) {
+        continue;
+      }
+      cookieMap.set(key, columns[6] ?? "");
+    }
+
+    if (cookieMap.size === 0) {
+      throw new Error(`No bilibili.com cookie found in ${cookiePath}`);
+    }
+
+    return buildRawCookieFromMap(cookieMap);
+  } finally {
+    await Bun.file(cookiePath).delete().catch(() => {});
+  }
 }
 
 async function persistBiliCookie(
@@ -517,6 +634,36 @@ async function validateBiliCookie(
       state: "unknown",
       reason: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+async function tryRefreshBiliCookie(
+  source: string,
+  loadCookie: () => Promise<string>,
+  envPath: string,
+  attempts: CookieRefreshAttempt[],
+): Promise<{ cookie: string; missingKeys: string[] } | null> {
+  try {
+    const rawCookie = await loadCookie();
+    const parsedCookie = parseRawCookie(rawCookie);
+    const validation = await validateBiliCookie(parsedCookie);
+    if (validation.state !== "valid") {
+      attempts.push({
+        source,
+        reason:
+          validation.reason ??
+          `Cookie validation returned state ${validation.state}.`,
+      });
+      return null;
+    }
+
+    return persistBiliCookie(rawCookie, envPath);
+  } catch (error) {
+    attempts.push({
+      source,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
 }
 
