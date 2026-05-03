@@ -9,7 +9,10 @@ export type ClippingPartReportStatus =
   | "ok"
   | "skipped"
   | "error";
-export type ClippingPartReportSkipReason = "short" | "missingSubtitle";
+export type ClippingPartReportSkipReason =
+  | "short"
+  | "missingSubtitle"
+  | "emptySegments";
 
 export type ClippingPartReportFix = SegmentFix;
 
@@ -35,6 +38,18 @@ export interface ClippingPartReportSkippedShort extends ClippingPartReportBase {
   skipReason: "short";
 }
 
+export interface ClippingPartReportSkippedEmptySegments
+  extends ClippingPartReportBase {
+  status: "skipped";
+  skipReason: "emptySegments";
+  attemptCount: number;
+  llmModel?: string;
+  segmentPromptHash?: string;
+  subtitleSha256?: string;
+  segmentCount: 0;
+  segmentFixes?: ClippingPartReportFix[];
+}
+
 export interface ClippingPartReportSkippedMissingSubtitle
   extends ClippingPartReportBase {
   status: "skipped";
@@ -54,6 +69,7 @@ export interface ClippingPartReportError extends ClippingPartReportBase {
 export type ClippingPartReport =
   | ClippingPartReportOk
   | ClippingPartReportSkippedShort
+  | ClippingPartReportSkippedEmptySegments
   | ClippingPartReportSkippedMissingSubtitle
   | ClippingPartReportError;
 
@@ -125,6 +141,7 @@ export type ClipPartResult =
       processedPart: null;
       report:
         | ClippingPartReportSkippedShort
+        | ClippingPartReportSkippedEmptySegments
         | ClippingPartReportSkippedMissingSubtitle;
     };
 

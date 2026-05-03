@@ -386,6 +386,29 @@ async function clipPart(
         ]);
         const { segments, fixes, metadata } = segmentResult.value;
         span.set({ segmentCount: segments.length });
+        if (segments.length === 0) {
+          span.set({ skipped: true, skipReason: "emptySegments" });
+          console.warn(
+            `[clipPart:skip] empty segments ${part.bvid} p${part.page} ${part.title}`,
+          );
+          return {
+            processedPart: null,
+            report: {
+              ...baseReport,
+              status: "skipped",
+              processingTime: formatProcessingTime(
+                performance.now() - partStartedMs,
+              ),
+              skipReason: "emptySegments",
+              attemptCount: segmentResult.attemptCount,
+              llmModel: metadata.llmModel,
+              segmentPromptHash: metadata.segmentPromptHash,
+              subtitleSha256: metadata.subtitleSha256,
+              segmentCount: 0,
+              segmentFixes: fixes,
+            },
+          } satisfies ClipPartResult;
+        }
         onPartProgressStarted("裁剪音频", null, null);
         const audioResult = await sliceAndConcatAudio(
           segments.map(({ start, end }) => [start, end] as const),
