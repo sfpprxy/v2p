@@ -32,7 +32,7 @@ import {
   buildReportError,
   formatProcessingTime,
   updateClippingReportPublishStatus,
-} from "./workflow_report";
+} from "./pipeline_report";
 import type { ClippingProgressState } from "./clipping_state";
 import { ScboyVideoStore, isDateValue } from "./scboy_video_store";
 
@@ -50,14 +50,14 @@ interface ClippingSource {
   episodeNumber: string;
 }
 
-interface WorkflowRunOptions {
+interface PipelineRunOptions {
   segmentExtraction: "reuse-existing" | "regenerate";
   forcePodcastUpload: boolean;
 }
 
 async function runClipping(
   llmModel: string,
-  runOptions: WorkflowRunOptions,
+  runOptions: PipelineRunOptions,
   dateInTitle?: string | [string, string] | string[] | null,
 ): Promise<ScboyClippingResult[]> {
   return profileSpan(
@@ -154,9 +154,9 @@ async function runClipping(
             );
           }
           progressTimer = setInterval(() => {
-            updateWorkflowProgress(progressDisplay, clippingControllers);
+            updatePipelineProgress(progressDisplay, clippingControllers);
           }, 100);
-          updateWorkflowProgress(progressDisplay, clippingControllers);
+          updatePipelineProgress(progressDisplay, clippingControllers);
           const finalizedClippingResults = await Promise.allSettled(
             clippingControllers.map((controller) => controller.completionPromise),
           );
@@ -184,7 +184,7 @@ async function runClipping(
           if (progressTimer !== null) {
             clearInterval(progressTimer);
           }
-          updateWorkflowProgress(progressDisplay, clippingControllers);
+          updatePipelineProgress(progressDisplay, clippingControllers);
           for (const itemBar of progressDisplay.itemBars.toReversed()) {
             progressDisplay.multibar.remove(itemBar);
           }
@@ -197,19 +197,19 @@ async function runClipping(
   );
 }
 
-function updateWorkflowProgress(
+function updatePipelineProgress(
   progressDisplay: ProgressDisplay,
   clippingControllers: readonly ClippingController[],
 ): void {
   updateProgressBars(
     progressDisplay,
-    buildWorkflowProgressItems(
+    buildPipelineProgressItems(
       clippingControllers.map(getClippingProgressState),
     ),
   );
 }
 
-function buildWorkflowProgressItems(
+function buildPipelineProgressItems(
   states: readonly ClippingProgressState[],
 ): ProgressItem[] {
   const now = performance.now();
@@ -319,7 +319,7 @@ if (import.meta.main) {
     } else if (isDateValue(arg)) {
       dateArgs.push(arg);
     } else {
-      throw new Error(`Unsupported workflow argument: ${arg}`);
+      throw new Error(`Unsupported pipeline argument: ${arg}`);
     }
   }
   if (modelArgs.length > 1) {
@@ -330,7 +330,7 @@ if (import.meta.main) {
   }
 
   const modelArg = modelArgs[0] ?? "gemini";
-  const runOptions: WorkflowRunOptions = rerun
+  const runOptions: PipelineRunOptions = rerun
     ? {
         segmentExtraction: "regenerate",
         forcePodcastUpload: true,
@@ -348,10 +348,10 @@ if (import.meta.main) {
       llmModel = DEFAULT_CODEX_MODEL;
       break;
     default:
-      throw new Error(`Unsupported workflow LLM backend: ${modelArg}`);
+      throw new Error(`Unsupported pipeline LLM backend: ${modelArg}`);
   }
 
-  const cutoffDate = getWorkflowCutoffDate(dateArgs);
+  const cutoffDate = getPipelineCutoffDate(dateArgs);
   if (cutoffDate !== null) {
     purgeGeneratedDataAfterDate(cutoffDate);
   }
@@ -368,7 +368,7 @@ if (import.meta.main) {
   await publishPodcastRelease(podcastStageInputs);
 }
 
-function getWorkflowCutoffDate(dateArgs: readonly string[]): Date | null {
+function getPipelineCutoffDate(dateArgs: readonly string[]): Date | null {
   if (dateArgs.length === 0) {
     return null;
   }
@@ -388,7 +388,7 @@ function purgeGeneratedDataAfterDate(cutoffDate: Date): void {
 
   console.log(
     [
-      `[workflow] purged generated data after ${cutoffLabel}`,
+      `[pipeline] purged generated data after ${cutoffLabel}`,
       `output directories: ${removedOutputDirectories}`,
       `podcast manifests: ${removedPodcastEpisodeManifests}`,
       "podcast site rebuilt",

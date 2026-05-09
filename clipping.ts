@@ -27,7 +27,7 @@ import {
   type PublishReport,
   type ClippingReport,
   writeClippingReport,
-} from "./workflow_report";
+} from "./pipeline_report";
 import type { ProgressDisplay } from "./progress";
 import type { ClippingPlan, ClippingOptions } from "./clipping_plan";
 import {

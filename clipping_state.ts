@@ -1,9 +1,9 @@
-import type { ClipPartResult } from "./workflow_report";
+import type { ClipPartResult } from "./pipeline_report";
 import type { ClippingPlan } from "./clipping_plan";
 import {
   formatProcessingTime,
   summarizeClipPartResults,
-} from "./workflow_report";
+} from "./pipeline_report";
 
 export type ClippingPartProgressPhase =
   | "pending"
