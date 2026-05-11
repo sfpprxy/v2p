@@ -117,6 +117,18 @@ export async function downloadSubtitle(
             ),
           );
         } catch (error) {
+          if (isMissingRequestedSubtitleError(error)) {
+            const missingSubtitleError = new MissingSubtitleError(
+              videoPart,
+              subtitlePath,
+            );
+            if (shouldLog) {
+              console.warn(
+                `[downloadSubtitle:missing] ${missingSubtitleError.message}`,
+              );
+            }
+            throw missingSubtitleError;
+          }
           throw new Error(
             `Failed to download subtitle for ${partLabel}: ${buildExternalCommandErrorMessage("yt-dlp", error)}`,
           );
@@ -132,9 +144,6 @@ export async function downloadSubtitle(
 
         succeeded = true;
       } finally {
-        if (cookieFilePath !== null) {
-          await Bun.file(cookieFilePath).delete().catch(() => {});
-        }
         if (shouldLog) {
           console.log(
             `[downloadSubtitle:end] ${succeeded ? "ok" : "error"} ${subtitlePath}`,
@@ -144,4 +153,28 @@ export async function downloadSubtitle(
       return subtitlePath;
     },
   );
+}
+
+function isMissingRequestedSubtitleError(error: unknown): boolean {
+  const text = [
+    extractExternalCommandText(error, "stderr"),
+    extractExternalCommandText(error, "stdout"),
+    error instanceof Error ? error.message : String(error),
+  ]
+    .filter((value) => value.length > 0)
+    .join("\n")
+    .toLowerCase();
+
+  return text.includes("there are no subtitles for the requested languages");
+}
+
+function extractExternalCommandText(
+  error: unknown,
+  key: "stderr" | "stdout",
+): string {
+  if (!(error instanceof Error)) {
+    return "";
+  }
+  const value = (error as unknown as Record<string, unknown>)[key];
+  return typeof value === "string" ? value.trim() : "";
 }
