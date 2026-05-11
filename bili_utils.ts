@@ -35,6 +35,8 @@ type CookieRefreshAttempt = { source: string; reason: string };
 let cachedCookieValidation:
   | Promise<{ state: CookieValidationState; reason?: string }>
   | null = null;
+let sharedYtDlpCookieFilePromise: Promise<string | null> | null = null;
+let sharedYtDlpCookieFileCleanupRegistered = false;
 
 export async function syncBiliCookieFromBrowser(
   browser = DEFAULT_BROWSER,
@@ -195,30 +197,8 @@ export async function getBiliCookie(): Promise<BiliCookieMap | null> {
 }
 
 export async function createTempBiliCookieFile(): Promise<string | null> {
-  const cookie = await getBiliCookie();
-  if (cookie === null) {
-    return null;
-  }
-
-  const cookieEntries = Object.entries(cookie).filter(
-    ([, value]) => typeof value === "string" && value.length > 0,
-  );
-  if (cookieEntries.length === 0) {
-    return null;
-  }
-
-  const cookiePath = resolve(`.bilibili.yt-dlp.${Date.now()}.cookies.txt`);
-  const expiresAt = "2147483647";
-  const rows = [
-    "# Netscape HTTP Cookie File",
-    ...cookieEntries.map(
-      ([key, value]) =>
-        `.bilibili.com\tTRUE\t/\tTRUE\t${expiresAt}\t${key}\t${value ?? ""}`,
-    ),
-    "",
-  ];
-  await Bun.write(cookiePath, rows.join("\n"));
-  return cookiePath;
+  sharedYtDlpCookieFilePromise ??= createSharedBiliCookieFile();
+  return sharedYtDlpCookieFilePromise;
 }
 
 export function buildBiliPartFileStem(part: BiliVideoPart): string {
@@ -353,7 +333,13 @@ async function syncBiliCookieFromFile(
 ): Promise<string> {
   const cookieText = await Bun.file(cookieFilePath).text();
   const parsedCookie = parseCookieFile(cookieText, cookieFilePath);
-  return buildRawCookieFromMap(new Map(Object.entries(parsedCookie)));
+  const cookieMap = new Map<string, string>();
+  for (const [key, value] of Object.entries(parsedCookie)) {
+    if (typeof value === "string") {
+      cookieMap.set(key, value);
+    }
+  }
+  return buildRawCookieFromMap(cookieMap);
 }
 
 async function syncBiliCookieFromRemoteDebugging(): Promise<string> {
@@ -493,6 +479,49 @@ async function syncBiliCookieFromYtDlp(browser: string): Promise<string> {
   } finally {
     await Bun.file(cookiePath).delete().catch(() => {});
   }
+}
+
+async function createSharedBiliCookieFile(): Promise<string | null> {
+  const cookie = await getBiliCookie();
+  if (cookie === null) {
+    return null;
+  }
+
+  const cookieEntries = Object.entries(cookie).filter(
+    ([, value]) => typeof value === "string" && value.length > 0,
+  );
+  if (cookieEntries.length === 0) {
+    return null;
+  }
+
+  const cookiePath = resolve(
+    `.bilibili.yt-dlp.${process.pid}.${Date.now()}.cookies.txt`,
+  );
+  const expiresAt = "2147483647";
+  const rows = [
+    "# Netscape HTTP Cookie File",
+    ...cookieEntries.map(
+      ([key, value]) =>
+        `.bilibili.com\tTRUE\t/\tTRUE\t${expiresAt}\t${key}\t${value ?? ""}`,
+    ),
+    "",
+  ];
+  await Bun.write(cookiePath, rows.join("\n"));
+  registerSharedYtDlpCookieCleanup(cookiePath);
+  return cookiePath;
+}
+
+function registerSharedYtDlpCookieCleanup(cookiePath: string): void {
+  if (sharedYtDlpCookieFileCleanupRegistered) {
+    return;
+  }
+  sharedYtDlpCookieFileCleanupRegistered = true;
+
+  const cleanup = () => {
+    void Bun.file(cookiePath).delete().catch(() => {});
+  };
+
+  process.once("exit", cleanup);
 }
 
 async function persistBiliCookie(
