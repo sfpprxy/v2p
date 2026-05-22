@@ -15,22 +15,22 @@ let openAIClient: OpenAI | null = null;
 export type GoogleThinkingLevel = "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
-export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+export const DEFAULT_CODEX_MODEL = "gpt-5.4";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5-openai";
 type LlmGenerator = (model: string, contents: string) => Promise<string>;
 
 export const LLM_MODEL_GENERATOR_MAP: Readonly<Record<string, LlmGenerator>> = {
-  [DEFAULT_GEMINI_MODEL]: genGoogle,
+  "gemini-3-flash-preview": genGoogle,
   "gemini-3-pro-preview": genGoogle,
   "gemini-3-pro-image-preview": genGoogle,
   "gemini-2.5-pro": genGoogle,
   "gemini-2.5-flash": genGoogle,
   "gemini-2.5-flash-image": genGoogle,
   "gemini-embedding-001": genGoogle,
-  [DEFAULT_CODEX_MODEL]: genCodex,
+  "gpt-5.5": genCodex,
   "gpt-5.4": genCodex,
   "gpt-5.2": genCodex,
-  [DEFAULT_OPENAI_MODEL]: genOpenAI,
+  "gpt-5.5-openai": genOpenAI,
   "gpt-5.4-openai": genOpenAI,
   "gpt-5.2-openai": genOpenAI,
 };
