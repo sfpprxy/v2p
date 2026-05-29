@@ -26,7 +26,11 @@ import {
   startClipping,
   type ClippingController,
 } from "./clipping";
-import { DEFAULT_CODEX_MODEL, DEFAULT_GEMINI_MODEL } from "./llm";
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  LLM_MODEL_GENERATOR_MAP,
+} from "./llm";
 import { runWithRetry } from "./retry";
 import {
   buildReportError,
@@ -320,7 +324,7 @@ if (import.meta.main) {
   for (const arg of process.argv.slice(2)) {
     if (arg === "--rerun") {
       rerun = true;
-    } else if (arg === "gemini" || arg === "codex") {
+    } else if (isPipelineModelArg(arg)) {
       modelArgs.push(arg);
     } else if (isDateValue(arg)) {
       dateArgs.push(arg);
@@ -358,7 +362,7 @@ if (import.meta.main) {
       llmModel = DEFAULT_CODEX_MODEL;
       break;
     default:
-      throw new Error(`Unsupported pipeline LLM backend: ${modelArg}`);
+      llmModel = modelArg;
   }
 
   const cutoffDate = getPipelineCutoffDate(dateArgs);
@@ -377,6 +381,14 @@ if (import.meta.main) {
     forceUpload: runOptions.forcePodcastUpload,
   });
   await publishPodcastRelease(podcastStageInputs);
+}
+
+function isPipelineModelArg(arg: string): boolean {
+  return (
+    arg === "gemini" ||
+    arg === "codex" ||
+    Object.hasOwn(LLM_MODEL_GENERATOR_MAP, arg)
+  );
 }
 
 function getPipelineCutoffDate(dateArgs: readonly string[]): Date | null {

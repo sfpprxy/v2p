@@ -11,6 +11,7 @@ import { profileSpan } from "./perf";
 
 let googleClient: GoogleGenAI | null = null;
 let openAIClient: OpenAI | null = null;
+let deepSeekClient: OpenAI | null = null;
 
 export type GoogleThinkingLevel = "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
 
@@ -33,6 +34,8 @@ export const LLM_MODEL_GENERATOR_MAP: Readonly<Record<string, LlmGenerator>> = {
   "gpt-5.5-openai": genOpenAI,
   "gpt-5.4-openai": genOpenAI,
   "gpt-5.2-openai": genOpenAI,
+  "deepseek-v4-flash": genDeepSeek,
+  "deepseek-v4-pro": genDeepSeek,
 };
 
 export async function gen(
@@ -119,6 +122,23 @@ async function genOpenAI(model: string, contents: string): Promise<string> {
   }
 }
 
+async function genDeepSeek(model: string, contents: string): Promise<string> {
+  try {
+    const response = await getDeepSeekClient().chat.completions.create({
+      model,
+      messages: [{ role: "user", content: contents }],
+      stream: false,
+    });
+
+    return nonEmpty(
+      response.choices[0]?.message.content,
+      `Empty DeepSeek response for model ${model}`,
+    );
+  } catch (error) {
+    throw new Error(`DeepSeek backend failed: ${getErrorMessage(error)}`);
+  }
+}
+
 async function genCodex(model: string, contents: string): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), "v2p-codex-exec-"));
   const outputPath = join(tempDir, "last-message.txt");
@@ -199,6 +219,19 @@ function getGoogleClient(): GoogleGenAI {
     googleClient = new GoogleGenAI({ apiKey: getGeminiApiKey() });
   }
   return googleClient;
+}
+
+function getDeepSeekClient(): OpenAI {
+  if (deepSeekClient === null) {
+    deepSeekClient = new OpenAI({
+      apiKey: nonEmpty(
+        process.env.DEEPSEEK_API_KEY?.trim(),
+        "DEEPSEEK_API_KEY is required for DeepSeek requests",
+      ),
+      baseURL: "https://api.deepseek.com",
+    });
+  }
+  return deepSeekClient;
 }
 
 function normalizeThinkingLevel(
