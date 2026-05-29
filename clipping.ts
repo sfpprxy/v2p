@@ -421,6 +421,7 @@ async function clipPart(
         return {
           processedPart: {
             page: part.page,
+            title: part.title,
             offtopicAudioPath: audioResult.outputPath,
             relativeSegmentsPath,
             segmentPromptHash: metadata.segmentPromptHash,
