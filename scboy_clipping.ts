@@ -1,4 +1,5 @@
 import type { BiliVideo, BiliVideoPart } from "./bili_video";
+import type { ClippingPartReport } from "./pipeline_report";
 import type { PodcastStageInput } from "./podcast";
 import {
   buildClippingPlan,
@@ -23,6 +24,7 @@ export interface ScboyClippingResult {
   video: BiliVideo;
   outputDir: string;
   episodeNumber: string;
+  clippingPartReports: readonly ClippingPartReport[];
 }
 
 export function filterScboyClippableVideos(

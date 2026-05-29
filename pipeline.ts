@@ -33,7 +33,10 @@ import {
   formatProcessingTime,
   updateClippingReportPublishStatus,
 } from "./pipeline_report";
-import type { ClippingProgressState } from "./clipping_state";
+import {
+  summarizeClippingState,
+  type ClippingProgressState,
+} from "./clipping_state";
 import { ScboyVideoStore, isDateValue } from "./scboy_video_store";
 
 const PROJECT_ROOT = import.meta.dir;
@@ -158,10 +161,13 @@ async function runClipping(
           }, 100);
           updatePipelineProgress(progressDisplay, clippingControllers);
           const finalizedClippingResults = await Promise.allSettled(
-            clippingControllers.map((controller) => controller.completionPromise),
+            clippingControllers.map(
+              (controller) => controller.completionPromise,
+            ),
           );
           const firstFailedClippingResult = finalizedClippingResults.find(
-            (result): result is PromiseRejectedResult => result.status === "rejected",
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected",
           );
           if (firstFailedClippingResult !== undefined) {
             throw firstFailedClippingResult.reason;
@@ -172,11 +178,15 @@ async function runClipping(
             }
             const video = clippingSources[index]!.video;
             const episodeNumber = clippingSources[index]!.episodeNumber;
+            const { clippingPartReports } = summarizeClippingState(
+              clippingControllers[index]!.getState(),
+            );
             return [
               {
                 video,
                 outputDir: result.value,
                 episodeNumber,
+                clippingPartReports,
               },
             ];
           });
@@ -234,15 +244,11 @@ function buildPipelineProgressItems(
               part.activeTasks.find(
                 (task) => task.statusLabel === "裁剪音频",
               ) ??
-              part.activeTasks.find(
-                (task) => task.statusLabel === "LLM提取",
-              ) ??
+              part.activeTasks.find((task) => task.statusLabel === "LLM提取") ??
               part.activeTasks.find(
                 (task) => task.statusLabel === "下载音频",
               ) ??
-              part.activeTasks.find(
-                (task) => task.statusLabel === "下载字幕",
-              );
+              part.activeTasks.find((task) => task.statusLabel === "下载字幕");
             if (visibleTask === undefined) {
               throw new Error(
                 `Active part progress is missing active task for P${part.page}`,
@@ -323,10 +329,14 @@ if (import.meta.main) {
     }
   }
   if (modelArgs.length > 1) {
-    throw new Error(`Expected at most one LLM backend, got ${modelArgs.length}`);
+    throw new Error(
+      `Expected at most one LLM backend, got ${modelArgs.length}`,
+    );
   }
   if (dateArgs.length > 2) {
-    throw new Error(`Expected at most two date arguments, got ${dateArgs.length}`);
+    throw new Error(
+      `Expected at most two date arguments, got ${dateArgs.length}`,
+    );
   }
 
   const modelArg = modelArgs[0] ?? "gemini";
@@ -361,6 +371,7 @@ if (import.meta.main) {
     runOptions,
     dateArgs.length === 0 ? null : dateArgs,
   );
+  printMissingSubtitlePartsBeforeUpload(clippingResults);
   const podcastStageInputs = buildScboyPodcastStageInputs(clippingResults);
   await stagePodcastEpisodesWithProgress(podcastStageInputs, {
     forceUpload: runOptions.forcePodcastUpload,
@@ -407,11 +418,16 @@ function purgeOutputDirectoriesAfterDate(cutoffDate: Date): number {
       continue;
     }
     const yearDirectoryPath = resolve(OUTPUT_ROOT, yearEntry.name);
-    for (const outputEntry of readdirSync(yearDirectoryPath, { withFileTypes: true })) {
+    for (const outputEntry of readdirSync(yearDirectoryPath, {
+      withFileTypes: true,
+    })) {
       if (!outputEntry.isDirectory()) {
         continue;
       }
-      const outputDate = parseOutputDirectoryDate(yearEntry.name, outputEntry.name);
+      const outputDate = parseOutputDirectoryDate(
+        yearEntry.name,
+        outputEntry.name,
+      );
       if (outputDate === null || outputDate.getTime() <= cutoffDate.getTime()) {
         continue;
       }
@@ -434,12 +450,16 @@ function purgePodcastEpisodeManifestsAfterDate(cutoffDate: Date): number {
   }
 
   let removedCount = 0;
-  for (const yearEntry of readdirSync(PODCAST_EPISODES_ROOT, { withFileTypes: true })) {
+  for (const yearEntry of readdirSync(PODCAST_EPISODES_ROOT, {
+    withFileTypes: true,
+  })) {
     if (!yearEntry.isDirectory() || !/^\d{4}$/u.test(yearEntry.name)) {
       continue;
     }
     const yearDirectoryPath = resolve(PODCAST_EPISODES_ROOT, yearEntry.name);
-    for (const manifestEntry of readdirSync(yearDirectoryPath, { withFileTypes: true })) {
+    for (const manifestEntry of readdirSync(yearDirectoryPath, {
+      withFileTypes: true,
+    })) {
       if (!manifestEntry.isFile()) {
         continue;
       }
@@ -447,7 +467,10 @@ function purgePodcastEpisodeManifestsAfterDate(cutoffDate: Date): number {
         yearEntry.name,
         manifestEntry.name,
       );
-      if (manifestDate === null || manifestDate.getTime() <= cutoffDate.getTime()) {
+      if (
+        manifestDate === null ||
+        manifestDate.getTime() <= cutoffDate.getTime()
+      ) {
         continue;
       }
       rmSync(resolve(yearDirectoryPath, manifestEntry.name), { force: true });
@@ -482,6 +505,50 @@ function parsePodcastEpisodeManifestDate(
   return new Date(`${year}-${match[1]}-${match[2]}T00:00:00`);
 }
 
+interface MissingSubtitlePart {
+  episodeNumber: string;
+  bvid: string;
+  videoTitle: string;
+  page: number;
+  partTitle: string;
+  subtitlePath: string;
+}
+
+function printMissingSubtitlePartsBeforeUpload(
+  clippingResults: readonly ScboyClippingResult[],
+): void {
+  const missingSubtitleParts: MissingSubtitlePart[] = [];
+  for (const clippingResult of clippingResults) {
+    for (const part of clippingResult.clippingPartReports) {
+      if (part.status !== "skipped" || part.skipReason !== "missingSubtitle") {
+        continue;
+      }
+      missingSubtitleParts.push({
+        episodeNumber: clippingResult.episodeNumber,
+        bvid: clippingResult.video.bvid,
+        videoTitle: clippingResult.video.title,
+        page: part.page,
+        partTitle: part.title,
+        subtitlePath: part.paths.subtitlePath,
+      });
+    }
+  }
+
+  if (missingSubtitleParts.length === 0) {
+    console.log(chalk.green("没有缺失字幕的 part"));
+    return;
+  }
+
+  console.log(chalk.yellow(`${missingSubtitleParts.length} 个 part 缺失字幕`));
+  for (const part of missingSubtitleParts) {
+    console.log(
+      chalk.yellow(
+        `  ${part.episodeNumber} ${part.bvid} P${part.page} ${part.partTitle}`,
+      ),
+    );
+  }
+}
+
 interface PodcastStageProgressItemState {
   label: string;
   title: string;
@@ -495,7 +562,10 @@ interface PodcastStageProgressItemState {
 }
 
 async function stagePodcastEpisodesWithProgress(
-  podcastStageInputs: readonly { outputDirectory: string; episodeNumber: string }[],
+  podcastStageInputs: readonly {
+    outputDirectory: string;
+    episodeNumber: string;
+  }[],
   options: { forceUpload: boolean },
 ): Promise<void> {
   if (podcastStageInputs.length === 0) {
@@ -508,7 +578,8 @@ async function stagePodcastEpisodesWithProgress(
     "podcast audio",
     {
       totalLabel: "upload",
-      itemFormat: "{label} {bar} {percentage}% {status} {processingTime} {title}",
+      itemFormat:
+        "{label} {bar} {percentage}% {status} {processingTime} {title}",
       emptyPayload: {
         label: "",
         status: "",
@@ -540,7 +611,9 @@ async function stagePodcastEpisodesWithProgress(
       onProgress: (event) => {
         const item = stageProgressItems[event.index];
         if (item === undefined) {
-          throw new Error(`Unknown podcast stage progress index: ${event.index}`);
+          throw new Error(
+            `Unknown podcast stage progress index: ${event.index}`,
+          );
         }
         switch (event.type) {
           case "episodeStarted":
@@ -684,9 +757,13 @@ async function publishPodcastRelease(
     await runGit(["add", releasePath]);
   }
 
-  const stagedDiffStatus = await readGitDiffQuietStatus(
-    ["diff", "--cached", "--quiet", "--", ...PODCAST_RELEASE_PATHS],
-  );
+  const stagedDiffStatus = await readGitDiffQuietStatus([
+    "diff",
+    "--cached",
+    "--quiet",
+    "--",
+    ...PODCAST_RELEASE_PATHS,
+  ]);
   if (stagedDiffStatus === "dirty") {
     const stagedEpisodePathResult = await runGit([
       "diff",
@@ -711,7 +788,8 @@ async function publishPodcastRelease(
       return `${match[1]}/${match[2]}`;
     });
     const visibleEpisodeLabels = episodeLabels.slice(0, 5);
-    const hiddenEpisodeCount = episodeLabels.length - visibleEpisodeLabels.length;
+    const hiddenEpisodeCount =
+      episodeLabels.length - visibleEpisodeLabels.length;
     const commitSubject = `Publish podcast episode${
       episodeLabels.length === 1 ? "" : "s"
     }: ${visibleEpisodeLabels.join(", ")}${
@@ -734,27 +812,23 @@ async function publishPodcastRelease(
     "@{u}",
   ]);
 
-  const aheadResult = await runGit(
-    [
-      "rev-list",
-      "--count",
-      `${upstreamResult.stdout.toString().trim()}..HEAD`,
-    ],
-  );
+  const aheadResult = await runGit([
+    "rev-list",
+    "--count",
+    `${upstreamResult.stdout.toString().trim()}..HEAD`,
+  ]);
   if (Number(aheadResult.stdout.toString().trim()) === 0) {
     console.log("Podcast release unchanged; nothing to push.");
     return;
   }
 
-  const releaseAheadStatus = await readGitDiffQuietStatus(
-    [
-      "diff",
-      "--quiet",
-      `${upstreamResult.stdout.toString().trim()}..HEAD`,
-      "--",
-      ...PODCAST_RELEASE_PATHS,
-    ],
-  );
+  const releaseAheadStatus = await readGitDiffQuietStatus([
+    "diff",
+    "--quiet",
+    `${upstreamResult.stdout.toString().trim()}..HEAD`,
+    "--",
+    ...PODCAST_RELEASE_PATHS,
+  ]);
   if (releaseAheadStatus === "clean") {
     console.log("Podcast release unchanged; nothing to push.");
     await updatePublishStatusForOutputDirectories(podcastStageInputs, {
@@ -806,10 +880,7 @@ async function runGit(
 async function readGitDiffQuietStatus(
   args: readonly string[],
 ): Promise<"clean" | "dirty"> {
-  const result = await $`git ${args}`
-    .cwd(PROJECT_ROOT)
-    .nothrow()
-    .quiet();
+  const result = await $`git ${args}`.cwd(PROJECT_ROOT).nothrow().quiet();
 
   if (result.exitCode === 0) {
     return "clean";
