@@ -1,0 +1,20 @@
+{
+  "id": "2026-0526-2",
+  "guid": "scboy:2026:0526:BV1sJGr69EcD",
+  "title": "5月26号跳跃之王+DOTA2",
+  "description": "prompt hash: 10ad9c, 05-29 13:08\n2026 0526-2\n(00:00:00) 01-跳跃之王 闲聊之前试玩过《地平线》试玩版，表示自己不打这类内容了。\n(00:00:15) 01-跳跃之王 聊到直播时间已经很晚，这场内容播得太久，准备换别的内容。\n(00:00:21) 02-DOTA2 抱怨手腕疼，感叹才跳了半小时就痛，回忆以前能连续跳很久。\n(00:00:35) 02-DOTA2 吐槽直播间氛围很虚伪，大家都爱报低分装菜，也承认自己挺虚伪。\n(00:01:30) 02-DOTA2 聊星际为什么玩起来更轻松、没那么累，还调侃“宝藏女孩”就是很菜但很要强。\n(00:02:45) 02-DOTA2 聊排到的对手和狙击问题，说大家都认识彼此，更多是在恶心人而不是直接认真打。\n",
+  "publishedAt": "2026-05-26T08:01:00+08:00",
+  "seasonNumber": "2026",
+  "episodeNumber": "0526-2",
+  "audioUrl": "https://pub-335a48adb6074d2b944650a251c09eb2.r2.dev/episodes/2026/0526-BV1sJGr69EcD-10ad9c.m4a",
+  "audioBytes": 3225101,
+  "audioType": "audio/mp4",
+  "durationSeconds": 240.358,
+  "source": {
+    "outputDir": "output\\2026\\05-26-5月26号跳跃之王+DOTA2",
+    "audioFileName": "BV1sJGr69EcD.merge.offtopic.m4a",
+    "shownotesFileName": "BV1sJGr69EcD.shownotes.txt",
+    "bvid": "BV1sJGr69EcD",
+    "objectKey": "episodes/2026/0526-BV1sJGr69EcD-10ad9c.m4a"
+  }
+}
